@@ -2,7 +2,7 @@
 name = "spark-dating-api"
 version = "0.1.0"
 description = ""
-authors = ["Nate <natewbrooks@gmail.com>"]
+authors = ["Nate natewbrooks@gmail.com"]
 package-mode = false
 
 [tool.poetry.dependencies]
@@ -30,7 +30,7 @@ exceptiongroup = "1.3.0"
 fastapi = "0.118.0"
 fastapi-cli = "0.0.13"
 fastapi-cloud-cli = "0.3.0"
-fastapi-socketio = "0.0.10"
+fastapi-socketio = "*"
 fastjsonschema = "2.21.2"
 filelock = "3.20.0"
 findpython = "0.7.1"
