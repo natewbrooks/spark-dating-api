@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO Client</title>
+</head>
+<body>
+    <div id ="chat" style="max-width: 400px; margin: 2rem auto; font-family: sans-serif;">
+        <h2>Chat</h2>
+        <ul id="messages" style="list-style: none; padding: 0; border: 1px solid #ccc; min-height: 200px; max-height: 200px; overflow-y: auto;">
+
+            </ul>
+        <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+            <input id="msgInput" placeholder="type a message..." style="flex: 1; padding: 0.5rem;"/>
+            <button id="sendBtn" style="padding: 0.5rem 1rem;">Send</button>
+        </div>
+    </div>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"
+    integrity="sha384-mkQ3/7FUtcGyoppY6bz/PORYoGqOl7/aSUMn2ymDOJcapfS6PHqxhRTMh1RR0Q6+" 
+    crossorigin="anonymous">
+</script>
+<script src="./index.js"></script>
+
+</body>
+
+</html>
