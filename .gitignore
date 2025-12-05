@@ -54,6 +54,3 @@ htmlcov/
 # MyPy / Pyright
 .mypy_cache/
 .pytype/
-
-
-chat/node_modules/
