@@ -8,9 +8,9 @@ print("Contents of current directory:", os.listdir('.'))
 print("Does 'routers' exist?:", os.path.exists('routers'))
 if os.path.exists('routers'):
     print("Contents of routers/:", os.listdir('routers'))
-    print("Does 'routers/public' exist?:", os.path.exists('routers/public'))
-    if os.path.exists('routers/public'):
-        print("Contents of routers/public/:", os.listdir('routers/public'))
+    print("Does 'routers/open' exist?:", os.path.exists('routers/open'))
+    if os.path.exists('routers/open'):
+        print("Contents of routers/open/:", os.listdir('routers/open'))
 print("Python path:", sys.path)
 print("=" * 50)
 
@@ -21,9 +21,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # Import routers
-from routers.public.auth import router as public_auth_router
-from routers.public.profile import router as public_profile_router
-from routers.public.user import router as public_user_router
+from routers.open.auth import router as open_auth_router
+from routers.open.profile import router as open_profile_router
+from routers.open.user import router as open_user_router
 
 from routers.private.profile import router as private_profile_router
 from routers.private.user import router as private_user_router
@@ -38,10 +38,10 @@ async def lifespan(app: FastAPI):
     yield
     # shutdown
 
-public_router = APIRouter(tags=["Public"])
-public_router.include_router(public_auth_router) 
-public_router.include_router(public_user_router)
-public_router.include_router(public_profile_router)
+open_router = APIRouter(tags=["Public"])
+open_router.include_router(open_auth_router) 
+open_router.include_router(open_user_router)
+open_router.include_router(open_profile_router)
 
 
 private_router = APIRouter(tags=["Private"])
@@ -74,8 +74,8 @@ app.add_middleware(
 )
 
 
-app.include_router(private_router) # private needs to be mounted before public
-app.include_router(public_router)
+app.include_router(private_router) # private needs to be mounted before open
+app.include_router(open_router)
 
 # Mount static files (e.g. images, JS, CSS)
 app.mount("/static", StaticFiles(directory="static"), name="static")
