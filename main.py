@@ -78,5 +78,5 @@ app.include_router(private_router) # private needs to be mounted before open
 app.include_router(open_router)
 
 # Mount static files (e.g. images, JS, CSS)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
