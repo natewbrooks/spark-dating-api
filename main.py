@@ -1,19 +1,3 @@
-import os, sys
-print("=" * 50)
-print("DEBUGGING INFO")
-print("=" * 50)
-print("Current working directory:", os.getcwd())
-print("__file__ location:", __file__)
-print("Contents of current directory:", os.listdir('.'))
-print("Does 'routers' exist?:", os.path.exists('routers'))
-if os.path.exists('routers'):
-    print("Contents of routers/:", os.listdir('routers'))
-    print("Does 'routers/open' exist?:", os.path.exists('routers/open'))
-    if os.path.exists('routers/open'):
-        print("Contents of routers/open/:", os.listdir('routers/open'))
-print("Python path:", sys.path)
-print("=" * 50)
-
 from fastapi_socketio import SocketManager
 from fastapi import FastAPI, APIRouter
 from fastapi.staticfiles import StaticFiles
@@ -55,7 +39,7 @@ origins = [
 ]
 
 
-app = FastAPI(title="Main API", lifespan=lifespan)
+app = FastAPI(title="Spark Dating API", lifespan=lifespan)
 socket_manager = SocketManager(
     app=app, 
     cors_allowed_origins=origins,
@@ -76,7 +60,3 @@ app.add_middleware(
 
 app.include_router(private_router) # private needs to be mounted before open
 app.include_router(open_router)
-
-# Mount static files (e.g. images, JS, CSS)
-# app.mount("/static", StaticFiles(directory="static"), name="static")
-
