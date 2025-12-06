@@ -1,8 +1,18 @@
-import sys
-import os
 
-# Add the current directory to Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+print("=" * 50)
+print("DEBUGGING INFO")
+print("=" * 50)
+print("Current working directory:", os.getcwd())
+print("__file__ location:", __file__)
+print("Contents of current directory:", os.listdir('.'))
+print("Does 'routers' exist?:", os.path.exists('routers'))
+if os.path.exists('routers'):
+    print("Contents of routers/:", os.listdir('routers'))
+    print("Does 'routers/public' exist?:", os.path.exists('routers/public'))
+    if os.path.exists('routers/public'):
+        print("Contents of routers/public/:", os.listdir('routers/public'))
+print("Python path:", sys.path)
+print("=" * 50)
 
 from fastapi_socketio import SocketManager
 from fastapi import FastAPI, APIRouter
