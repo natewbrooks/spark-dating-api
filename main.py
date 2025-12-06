@@ -11,8 +11,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # Import routers
-from routers.public import auth_router as public_auth_router, profile_router as public_profile_router, user_router as public_user_router
-from routers.private import profile_router as private_profile_router, user_router as private_user_router, matchmaking_router as private_matchmaking_router
+from routers.public.auth import router as public_auth_router
+from routers.public.profile import router as public_profile_router
+from routers.public.user import router as public_user_router
+
+from routers.private.profile import router as private_profile_router
+from routers.private.user import router as private_user_router
+from routers.private.matchmaking import router as private_matchmaking_router
 
 from config import settings
 from services.sockets import register_socket_handlers
