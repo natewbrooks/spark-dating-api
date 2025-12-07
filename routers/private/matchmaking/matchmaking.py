@@ -6,6 +6,7 @@ from controllers.matchmaking import (
     _get_queue, 
     _join_queue, 
     _leave_queue, 
+    _exit_matchmaking,
     _poll_for_match,
     MATCHMAKING_TIMEOUT_SECONDS,
     MATCHMAKING_POLL_INTERVAL_SECONDS
@@ -95,6 +96,17 @@ def get_matchmaking_config():
         "poll_interval_seconds": MATCHMAKING_POLL_INTERVAL_SECONDS,
         "description": f"Poll every {MATCHMAKING_POLL_INTERVAL_SECONDS}s for up to {MATCHMAKING_TIMEOUT_SECONDS}s"
     }
+    
+@router.delete("/exit")
+def exit_matchmaking_session(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
+    """
+    Fully exit matchmaking for the current user.
+
+    Intended for guests:
+    - Removes user from matchmaking queue (if present)
+    - Leaves any active session without re-queuing them
+    """
+    return _exit_matchmaking(uid=uid, db=db)
 
 
 # Session state transitions:

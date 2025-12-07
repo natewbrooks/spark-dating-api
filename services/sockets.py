@@ -185,7 +185,10 @@ def register_socket_handlers(sm):
         raw_uid = sid_user_map.get(sid)
         uid = str(raw_uid) if raw_uid is not None else None
 
+        logging.info(f"chat_message from SID={sid}, uid={uid}, data={data}")
+
         if not isinstance(data, dict):
+            logging.warning(f"chat_message invalid data type: {type(data)}")
             await sm.emit("error", {"message": "Invalid message format"}, room=sid)
             return
 
@@ -196,18 +199,27 @@ def register_socket_handlers(sm):
         content = data.get("content")
 
         if not uid or not session_id or not content:
-            logging.warning(f"Invalid message payload or unauthenticated sender: sid={sid}, uid={uid}, session_id={session_id}")
+            logging.warning(
+                f"Invalid message payload or unauthenticated sender: "
+                f"sid={sid}, uid={uid}, session_id={session_id}, content={content!r}"
+            )
             await sm.emit("error", {"message": "Invalid message format"}, room=sid)
             return
 
         db = SessionLocal()
         try:
+            logging.info(
+                f"Persisting chat_message: uid={uid}, session_id={session_id}, content_len={len(content)}"
+            )
+
             message_data = _add_chat_message(
                 session_id=session_id,
                 author_uid=uid,
                 content=content,
                 db=db,
             )
+
+            logging.info(f"_add_chat_message returned: {message_data}")
 
             if isinstance(message_data, dict):
                 created_at = message_data["created_at"]
@@ -217,32 +229,40 @@ def register_socket_handlers(sm):
                 message_id = getattr(message_data, "id", None)
 
             if created_at is None or message_id is None:
+                logging.error(f"message_data missing fields: {message_data}")
                 raise RuntimeError("message_data missing created_at or id")
 
+            message_id_str = str(message_id)
+            created_at_str = created_at.isoformat()
+
             session = _get_active_session_by_id(session_id, db)
+            logging.info(f"_get_active_session_by_id({session_id}) -> {session}")
+
             if not session:
                 await sm.emit("error", {"message": "Chat session is no longer active"}, room=sid)
                 return
 
             payload = {
-                "session_id": session_id,
-                "author_uid": uid,
+                "session_id": session_id,          # already str
+                "author_uid": uid,                 # already str
                 "content": content,
-                "created_at": created_at.isoformat(),
-                "id": message_id,
+                "created_at": created_at_str,      # str
+                "id": message_id_str,              # str
             }
 
             room = f"session:{session_id}"
+            logging.info(f"Emitting chat_received to room {room} with payload={payload}")
             await sm.emit("chat_received", payload, room=room)
             logging.info(f"Message from {uid} in session {session_id} broadcast to room {room}")
 
         except HTTPException as e:
+            logging.warning(f"HTTPException in chat_message: {e.detail}")
             await sm.emit("error", {"message": e.detail}, room=sid)
         except SQLAlchemyError as e:
-            logging.error(f"DB error handling chat_message: {e}")
+            logging.exception(f"SQLAlchemyError handling chat_message (uid={uid}, session_id={session_id}): {e}")
             await sm.emit("error", {"message": "Server error processing message"}, room=sid)
         except Exception as e:
-            logging.exception(f"Critical error handling chat_message: {e}")
+            logging.exception(f"Critical error handling chat_message (uid={uid}, session_id={session_id}): {e}")
             await sm.emit("error", {"message": "Server error processing message"}, room=sid)
         finally:
             db.close()

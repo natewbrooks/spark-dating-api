@@ -3,8 +3,10 @@ from sqlalchemy import text
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, Dict, Any
+from logging import log
+import logging
 
 from controllers.preferences import _get_user_prefs
 from controllers.profile import _get_profile
@@ -94,16 +96,44 @@ def _leave_queue(uid: str, db: Session):
     
     return res
 
+def _exit_matchmaking(uid: str, db: Session):
+    """Make user fully exit from matchmaking without putting them back in queue"""
+    from controllers.session import _user_in_session, _leave_session
+    
+    queue_entry = None
+    session_result = None
 
-def _calculate_age_from_dob(dob: str) -> int:
-    """Calculate age from date of birth string."""
-    try:
-        birth_date = datetime.strptime(dob, "%Y-%m-%d")
-        today = datetime.utcnow()
-        age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
-        return age
-    except:
+    if _user_in_queue(uid=uid, db=db):
+        queue_entry = _leave_queue(uid=uid, db=db)
+
+    if _user_in_session(uid=uid, db=db):
+        session_result = _leave_session(uid=uid, db=db)
+
+    return {
+        "message": "User fully exited matchmaking",
+        "queue_entry": dict(queue_entry) if queue_entry else None,
+        "session": dict(session_result) if session_result else None,
+    }
+
+def _calculate_age_from_dob(dob) -> int:
+    if not dob:
         return 0
+
+    if isinstance(dob, date):
+        birth_date = dob
+    elif isinstance(dob, str):
+        try:
+            birth_date = datetime.strptime(dob[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return 0
+    else:
+        return 0
+
+    today = datetime.utcnow().date()
+    age = today.year - birth_date.year - (
+        (today.month, today.day) < (birth_date.month, birth_date.day)
+    )
+    return age
 
 def _parse_location(location_text: str) -> Optional[tuple[float, float]]:
     """
@@ -181,85 +211,148 @@ def _calculate_distance_miles(lat1: float, lon1: float, lat2: float, lon2: float
     distance = R * c
     return distance
 
+
 def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profile: dict, guest_profile: dict) -> bool:
-    """
-    Determine if two users' preferences are compatible.
-    Both users must satisfy each other's criteria.
-    """
-    
+    log = logging.getLogger("matchmaking")
+    log.info("=== Checking compatibility ===")
+
+    log.info(f"Host prefs: {host_prefs}")
+    log.info(f"Guest prefs: {guest_prefs}")
+    log.info(f"Host profile: {host_profile}")
+    log.info(f"Guest profile: {guest_profile}")
+
     # Extract host preferences
     host_age_min = host_prefs.get('age_min', 18)
     host_age_max = host_prefs.get('age_max', 99)
     host_target_gender_id = host_prefs.get('target_gender_id')
     host_max_distance = host_prefs.get('max_distance', 999999)
-    
+
     # Extract guest preferences
     guest_age_min = guest_prefs.get('age_min', 18)
     guest_age_max = guest_prefs.get('age_max', 99)
     guest_target_gender_id = guest_prefs.get('target_gender_id')
     guest_max_distance = guest_prefs.get('max_distance', 999999)
-    
+
     # Extract profile info
     host_gender_id = host_profile.get('gender_id')
     guest_gender_id = guest_profile.get('gender_id')
-    host_dob = host_profile.get('dob')
-    guest_dob = guest_profile.get('dob')
+    host_dob = host_profile.get('birthdate')
+    guest_dob = guest_profile.get('birthdate')
     host_location = host_profile.get('location')
     guest_location = guest_profile.get('location')
-    
+
     # Calculate ages
     host_age = _calculate_age_from_dob(host_dob) if host_dob else 0
     guest_age = _calculate_age_from_dob(guest_dob) if guest_dob else 0
-    
-    # Check gender compatibility (both ways)
-    if host_target_gender_id and guest_gender_id:
-        if host_target_gender_id != guest_gender_id:
-            return False
-    
-    if guest_target_gender_id and host_gender_id:
-        if guest_target_gender_id != host_gender_id:
-            return False
-    
-    # Check age compatibility (both ways)
+
+    log.info(f"Computed ages -> Host age: {host_age}, Guest age: {guest_age}")
+
+    # Gender compatibility (both ways)
+    # Resolve gender names
+    host_gender_name = host_profile.get("gender_name")
+    guest_gender_name = guest_profile.get("gender_name")
+
+    # Resolve target preferences
+    host_target_name = host_prefs.get("target_gender_name")
+    guest_target_name = guest_prefs.get("target_gender_name")
+
+    # Treat "any" as wildcard
+    def accepts(target, actual):
+        if target is None:
+            return True
+        if target.lower() == "any":
+            return True
+        return target == actual
+
+    # Check both directions
+    if not accepts(host_target_name, guest_gender_name):
+        log.info(f"Gender fail: host wants {host_target_name}, guest is {guest_gender_name}")
+        return False
+
+    if not accepts(guest_target_name, host_gender_name):
+        log.info(f"Gender fail: guest wants {guest_target_name}, host is {host_gender_name}")
+        return False
+
+    # Age compatibility (both ways)
     if guest_age > 0:
         if not (host_age_min <= guest_age <= host_age_max):
+            log.info(f"Age fail: guest_age={guest_age} not in host range [{host_age_min}, {host_age_max}]")
             return False
-    
+
     if host_age > 0:
         if not (guest_age_min <= host_age <= guest_age_max):
+            log.info(f"Age fail: host_age={host_age} not in guest range [{guest_age_min}, {guest_age_max}]")
             return False
-    
-    # Check location/distance compatibility (both ways)
-    # Parse locations
+
+    # Distance compatibility (both ways)
     host_coords = _parse_location(host_location)
     guest_coords = _parse_location(guest_location)
-    
-    # Only check distance if both users have valid coordinates
+
+    log.info(f"Parsed host coords: {host_coords}, guest coords: {guest_coords}")
+
     if host_coords and guest_coords:
         host_lat, host_lon = host_coords
         guest_lat, guest_lon = guest_coords
-        
-        # Calculate actual distance between users
+
         distance_miles = _calculate_distance_miles(host_lat, host_lon, guest_lat, guest_lon)
-        
-        # Both users must be within each other's max distance
+        log.info(f"Distance between users: {distance_miles} miles")
+
         if distance_miles > host_max_distance:
+            log.info(f"Distance fail: {distance_miles} > host max {host_max_distance}")
             return False
-        
+
         if distance_miles > guest_max_distance:
+            log.info(f"Distance fail: {distance_miles} > guest max {guest_max_distance}")
             return False
-        
-    # TODO: Check extra_options compatibility
-    
+
+    log.info("Users ARE compatible!")
     return True
+
+def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile: dict, db: Session) -> Optional[str]:
+    """
+    Find a compatible peer directly from the matchmaking_queue.
+    Returns the UID of the peer if found, or None.
+    """
+    stmt = text("""
+        SELECT 
+            q.uid,
+            q.prefs_snapshot,
+            q.location_snapshot,
+            q.enqueued_at
+        FROM sessions.matchmaking_queue q
+        WHERE q.uid != :guest_uid
+          AND q.expires_at > NOW()
+        ORDER BY q.enqueued_at ASC
+        LIMIT 20
+    """)
+
+    rows = db.execute(stmt, {"guest_uid": guest_uid}).mappings().all()
+
+    for row in rows:
+        host_uid = row["uid"]
+        host_prefs = row["prefs_snapshot"]
+
+        host_profile = _get_profile(uid=host_uid, db=db)
+        if not host_profile:
+            continue
+
+        # If location is not present fall back to snapshot if needed
+        if not host_profile.get("location") and row.get("location_snapshot"):
+            host_profile = dict(host_profile)
+            host_profile["location"] = row["location_snapshot"]
+
+        if _are_preferences_compatible(
+            host_prefs=host_prefs,
+            guest_prefs=guest_prefs,
+            host_profile=host_profile,
+            guest_profile=guest_profile,
+        ):
+            return host_uid
+
+    return None
 
 
 def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: dict, db: Session) -> Optional[str]:
-    """
-    Find a compatible open session based on preferences.
-    Returns session_id if found, None otherwise.
-    """
-    
     stmt = text("""
         SELECT 
             s.id,
@@ -271,133 +364,221 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
         FROM sessions.sessions s
         JOIN sessions.matchmaking_queue q
             ON q.uid = s.host_uid
-        AND q.expires_at > NOW()
+            AND q.expires_at > NOW()
         JOIN users.users u
             ON u.id = s.host_uid
-        AND u.deleted_at IS NULL
-        AND u.paused = FALSE
+            AND u.deleted_at IS NULL
+            AND u.paused = FALSE
         LEFT JOIN profiles.profiles pr
             ON pr.uid = s.host_uid
         WHERE s.status = 'open'
-        AND s.guest_uid IS NULL
-        AND s.closed_at IS NULL
-        AND s.host_uid != :guest_uid
+          AND s.guest_uid IS NULL
+          AND s.closed_at IS NULL
+          AND s.host_uid != :guest_uid
         ORDER BY q.enqueued_at ASC
         LIMIT 20
     """)
 
-    
     potential_sessions = db.execute(stmt, {"guest_uid": guest_uid}).mappings().all()
-    
-    # Check compatibility with each potential session
-    for session in potential_sessions:
-        host_prefs = session['host_prefs']
+
+    for row in potential_sessions:
+        host_prefs = row["host_prefs"]
         host_profile = {
-            'dob': session['host_dob'],
-            'gender_id': session['host_gender_id'],
-            'location': session['host_location']
+            "birthdate": row["host_birthdate"],
+            "gender_id": row["host_gender_id"],
+            "location": row["host_location"],
         }
-        
+
         if _are_preferences_compatible(host_prefs, guest_prefs, host_profile, guest_profile):
-            return session['id']
-    
+            return row["id"]
+
     return None
 
-
 def _poll_for_match(uid: str, db: Session):
-    """
-    Poll for a match. Called by frontend every POLL_INTERVAL seconds.
+    from controllers.session import _get_active_session
     
-    Returns:
-    - dict with status indicating what happened:
-      - 'matched': Found a match and joined as guest
-      - 'timeout': Timeout reached, created session as host
-      - 'searching': Still searching, keep polling
-      - 'cancelled': User left queue (shouldn't happen in normal flow)
-    """
-    # Check if user is still in queue
+    
+    session = _get_active_session(uid=uid, db=db)
+    if session:
+        session_dict = dict(session)
+
+        host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
+        guest_uid = str(session_dict.get("guest_uid")) if session_dict.get("guest_uid") else None
+        current_uid = str(uid)
+
+        role = "guest" if guest_uid == current_uid else "host"
+        if _user_in_queue(uid=uid, db=db):
+            _leave_queue(uid=uid, db=db)
+            
+        return {
+            "status": "matched",
+            "role": role,
+            "session": session_dict,
+            "message": "Match found!",
+        }
+
     if not _user_in_queue(uid=uid, db=db):
-        # User was either matched or left queue
-        from controllers.session import _get_active_session
-        session = _get_active_session(uid=uid, db=db)
-        if session:
-            return {
-                "status": "matched",
-                "role": "guest" if session['guest_uid'] == uid else "host",
-                "session": dict(session),
-                "message": "Match found!"
-            }
-        else:
-            return {
-                "status": "cancelled",
-                "message": "User not in queue and not in session"
-            }
-    
-    # Get queue entry to check timing
+        return {
+            "status": "cancelled",
+            "message": "User not in queue and not in session",
+        }
+
     queue_entry = _get_queue(uid=uid, db=db)
-    enqueued_at = queue_entry['enqueued_at']
+    enqueued_at = queue_entry["enqueued_at"]
     time_elapsed = (datetime.utcnow() - enqueued_at).total_seconds()
-    
-    # Check if timeout has been reached
+
+    guest_prefs = queue_entry["prefs_snapshot"]
+    guest_profile = _get_profile(uid=uid, db=db)
+
+    peer_uid = _find_compatible_queue_peer(
+        guest_uid=uid,
+        guest_prefs=guest_prefs,
+        guest_profile=guest_profile,
+        db=db,
+    )
+
+    if peer_uid:
+        from controllers.session import _create_session_from_queue, _join_session_by_id
+
+        host_uid = peer_uid
+        host_queue = _get_queue(uid=host_uid, db=db)
+        host_mode_id = host_queue.get("mode_id")
+        host_prefs_snapshot = host_queue["prefs_snapshot"]
+
+        session = _create_session_from_queue(
+            host_uid=host_uid,
+            mode_id=host_mode_id,
+            prefs_snapshot=host_prefs_snapshot,
+            db=db,
+        )
+        session_dict = dict(session)
+
+        _join_session_by_id(session_id=session_dict["id"], guest_uid=uid, db=db)
+
+        _leave_queue(uid=uid, db=db)
+        _leave_queue(uid=host_uid, db=db)
+
+        _notify_host_of_match(host_uid=host_uid, session_id=session_dict["id"], guest_uid=uid)
+
+        return {
+            "status": "matched",
+            "role": "guest",
+            "session": session_dict,
+            "message": "Match found!",
+        }
+
     if time_elapsed >= MATCHMAKING_TIMEOUT_SECONDS:
-        # Timeout reached - create session as host
-        mode_id = queue_entry.get('mode_id')
-        prefs_snapshot = queue_entry['prefs_snapshot']
-        
+        mode_id = queue_entry.get("mode_id")
+        prefs_snapshot = queue_entry["prefs_snapshot"]
+
         from controllers.session import _create_session_from_queue
+
         session = _create_session_from_queue(
             host_uid=uid,
             mode_id=mode_id,
             prefs_snapshot=prefs_snapshot,
-            db=db
+            db=db,
         )
-        
-        # Keep user in queue so others can find their session
-        
+
         return {
             "status": "timeout",
             "role": "host",
             "session": dict(session),
-            "message": "No matches found. Created session as host. Waiting for a compatible user..."
+            "message": "No matches found. Created session as host. Waiting for a compatible user...",
         }
-    
-    # Try to find a match
-    guest_prefs = queue_entry['prefs_snapshot']
-    guest_profile = _get_profile(uid=uid, db=db)
-    
+
     session_id = _find_compatible_session(
         guest_uid=uid,
         guest_prefs=guest_prefs,
         guest_profile=guest_profile,
-        db=db
+        db=db,
     )
-    
+
     if session_id:
-        # Found a match! Join as guest
         from controllers.session import _join_session_by_id
+
         session = _join_session_by_id(session_id=session_id, guest_uid=uid, db=db)
         _leave_queue(uid=uid, db=db)
-        
-        # Notify host via WebSocket
-        _notify_host_of_match(session['host_uid'], session['id'], uid)
-        
+
+        _notify_host_of_match(session["host_uid"], session["id"], uid)
+
         return {
             "status": "matched",
             "role": "guest",
             "session": dict(session),
-            "message": "Match found!"
+            "message": "Match found!",
         }
-    
-    # No match yet - keep searching
+
     time_remaining = MATCHMAKING_TIMEOUT_SECONDS - time_elapsed
     return {
         "status": "searching",
         "message": "Still searching for a match...",
         "time_elapsed": int(time_elapsed),
         "time_remaining": int(time_remaining),
-        "poll_again_in": MATCHMAKING_POLL_INTERVAL_SECONDS
+        "poll_again_in": MATCHMAKING_POLL_INTERVAL_SECONDS,
+    }
+    
+def _get_matchmaking_state(uid: str, db: Session) -> dict:
+    from controllers.session import _get_active_session
+
+    session = _get_active_session(uid=uid, db=db)
+    config = {
+        "timeout_seconds": MATCHMAKING_TIMEOUT_SECONDS,
+        "poll_interval_seconds": MATCHMAKING_POLL_INTERVAL_SECONDS,
     }
 
+    if session:
+        if _user_in_queue(uid=uid, db=db):
+            _leave_queue(uid=uid, db=db)
+
+        session_dict = dict(session)
+
+        host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
+        guest_uid = str(session_dict.get("guest_uid")) if session_dict.get("guest_uid") else None
+        current_uid = str(uid)
+
+        other_uid = None
+        if current_uid == host_uid:
+            other_uid = guest_uid
+        elif current_uid == guest_uid:
+            other_uid = host_uid
+
+        other_first_name = None
+        if other_uid:
+            row = db.execute(
+                text("SELECT first_name FROM users.users WHERE id = :id LIMIT 1"),
+                {"id": other_uid},
+            ).mappings().first()
+            if row:
+                other_first_name = row["first_name"]
+
+        session_dict["other_user_uid"] = other_uid
+        session_dict["other_user_first_name"] = other_first_name
+
+        return {
+            "state": "in_session",
+            "role": "guest" if guest_uid == current_uid else "host",
+            "session": session_dict,
+            "config": config,
+        }
+
+    if _user_in_queue(uid=uid, db=db):
+        queue_entry = _get_queue(uid=uid, db=db)
+        enqueued_at = queue_entry["enqueued_at"]
+        time_elapsed = (datetime.utcnow() - enqueued_at).total_seconds()
+        time_remaining = max(0, MATCHMAKING_TIMEOUT_SECONDS - time_elapsed)
+
+        return {
+            "state": "searching",
+            "time_elapsed": int(time_elapsed),
+            "time_remaining": int(time_remaining),
+            "config": config,
+        }
+
+    return {
+        "state": "idle",
+        "config": config,
+    }
 
 def _notify_host_of_match(host_uid: str, session_id: str, guest_uid: str):
     try:

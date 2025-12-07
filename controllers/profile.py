@@ -17,9 +17,16 @@ def _profile_exists(uid: str, db: Session) -> bool:
 
 def _get_profile(uid: str, db: Session):
     stmt = text("""
-        SELECT * FROM profiles.profiles WHERE uid = :tuid LIMIT 1
+        SELECT 
+            p.*,
+            u.birthdate
+        FROM profiles.profiles p
+        JOIN users.users u
+          ON u.id = p.uid
+        WHERE p.uid = :uid
+        LIMIT 1
     """)
-    profile = db.execute(stmt, {'tuid': uid}).mappings().first()
+    profile = db.execute(stmt, {'uid': uid}).mappings().first()
     
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")

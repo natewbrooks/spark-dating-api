@@ -9,6 +9,8 @@ from schemas.session import SessionSchema, CreateSessionSchema
 from schemas.session.status import SessionStatusEnum
 from controllers.matchmaking import _user_in_queue, _leave_queue, _join_queue
 
+import logging
+
 def _user_in_session(uid: str, db: Session):
     exists = _get_active_session(uid=uid, db=db)
     return bool(exists)
@@ -163,7 +165,9 @@ def _create_session_from_queue(
     return res
 
 def _leave_session(uid: str, db: Session):
-    """Leave current session and handle cleanup."""
+    """Leave current session and handle cleanup.
+    If guest leaves a sesssion, they are put back into the matchmaking queue
+    """
     if not _user_in_session(uid=uid, db=db):
         raise HTTPException(status_code=404, detail=f"User with uid '{uid}' is not in a session!")
     
@@ -256,9 +260,9 @@ def _add_chat_message(session_id: str, author_uid: str, content: str, db: Sessio
         db.execute(
             stmt,
             {
-                "session_id": session_id,
+                "session_id": str(session_id),
                 "author_uid": author_uid_str,
-                "receiver_uid": receiver_uid,
+                "receiver_uid": str(receiver_uid),
                 "content": content,
             },
         )
@@ -266,4 +270,49 @@ def _add_chat_message(session_id: str, author_uid: str, content: str, db: Sessio
         .first()
     )
 
+    db.commit()
+
+    if not res:
+        logging.error(
+            f"Chat insert returned no row for session_id={session_id}, "
+            f"author_uid={author_uid_str}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to persist chat message"
+        )
+
     return res
+
+def _get_session_chats(uid: str, db: Session, limit: int = 100):
+    session = _get_active_session(uid=uid, db=db)
+    if not session:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User with uid '{uid}' is not currently in an active session."
+        )
+
+    session_id = str(session["id"])
+
+    stmt = text("""
+        SELECT id,
+               session_id,
+               author_uid,
+               receiver_uid,
+               content,
+               created_at
+        FROM sessions.chats
+        WHERE session_id = :session_id
+        ORDER BY created_at ASC
+        LIMIT :limit
+    """)
+
+    rows = db.execute(
+        stmt,
+        {
+            "session_id": session_id,
+            "limit": limit,
+        },
+    ).mappings().all()
+
+    return [dict(row) for row in rows]

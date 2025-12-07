@@ -1,6 +1,8 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from config import settings
+from sqlalchemy.exc import OperationalError
+from fastapi import HTTPException
 
 """
 THE PURPOSE OF THIS FILE IS TO CREATE A REUSABLE SINGLETON SESSION WITH THE SUPABASE DATABASE
@@ -34,12 +36,19 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, futu
 
 # FastAPI dependency with verbose safety rollback and close if it fails
 def get_db():
-    db = SessionLocal()
+    try:
+        db = SessionLocal()
+    except OperationalError as e:
+        # Detect the Supabase MaxClientsInSessionMode error
+        msg = str(e.orig) if hasattr(e, "orig") else str(e)
+        if "MaxClientsInSessionMode" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Database connection limit reached, please try again shortly.",
+            )
+        raise
     try:
         yield db
         db.commit()
-    except Exception:
-        db.rollback()
-        raise
     finally:
         db.close()
