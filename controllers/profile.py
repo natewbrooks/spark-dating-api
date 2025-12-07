@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from typing import Dict, Any
 from controllers.user import _user_exists
+from schemas.profile import UserProfileSchema
 
 def _profile_exists(uid: str, db: Session) -> bool:
     if not _user_exists(uid=uid, db=db):
@@ -63,7 +64,7 @@ def _get_profile(uid: str, db: Session) -> Dict[str, Any]:
 
     return profile
 
-def _create_profile(uid: str, payload: Dict[str, Any], db: Session) -> Dict[str, Any]:
+def _create_profile(uid: str, payload: UserProfileSchema, db: Session) -> Dict[str, Any]:
     """
     Inserts a new profile record for the user.
     """
@@ -134,7 +135,7 @@ def _create_profile(uid: str, payload: Dict[str, Any], db: Session) -> Dict[str,
         raise HTTPException(status_code=500, detail=f"Database error during profile creation: {e}")
 
 
-def _update_profile(uid: str, payload: Dict[str, Any], db: Session) -> Dict[str, Any]:
+def _update_profile(uid: str, payload: UserProfileSchema, db: Session) -> Dict[str, Any]:
     """
     Updates an existing profile record for the user.
     """
