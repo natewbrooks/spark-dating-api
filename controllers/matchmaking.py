@@ -14,6 +14,7 @@ import uuid
 # Configurable matchmaking settings
 MATCHMAKING_TIMEOUT_SECONDS = 15
 MATCHMAKING_POLL_INTERVAL_SECONDS = 3
+RECENT_SESSION_COOLDOWN_MINUTES = 15
 
 def _get_queue(uid: str, db: Session):
     """Get user's current queue entry."""
@@ -211,6 +212,44 @@ def _calculate_distance_miles(lat1: float, lon1: float, lat2: float, lon2: float
     distance = R * c
     return distance
 
+def _have_matched_before(uid_a: str, uid_b: str, db: Session) -> bool:
+    a, b = sorted([str(uid_a), str(uid_b)])
+    row = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM users.chats
+            WHERE user_a_uid = :a
+              AND user_b_uid = :b
+            LIMIT 1
+            """
+        ),
+        {"a": a, "b": b},
+    ).first()
+    return row is not None
+
+
+def _has_recent_session(uid_a: str, uid_b: str, db: Session) -> bool:
+    cooldown_seconds = RECENT_SESSION_COOLDOWN_MINUTES * 60
+    row = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM sessions.sessions s
+            WHERE (
+                (s.host_uid = :a AND s.guest_uid = :b)
+                OR
+                (s.host_uid = :b AND s.guest_uid = :a)
+            )
+              AND s.closed_at IS NOT NULL
+              AND s.closed_at > NOW() - make_interval(secs => :cooldown_seconds)
+            LIMIT 1
+            """
+        ),
+        {"a": uid_a, "b": uid_b, "cooldown_seconds": cooldown_seconds},
+    ).first()
+    return row is not None
+
 
 def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profile: dict, guest_profile: dict) -> bool:
     log = logging.getLogger("matchmaking")
@@ -330,6 +369,12 @@ def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile
 
     for row in rows:
         host_uid = row["uid"]
+        
+        if _have_matched_before(guest_uid, host_uid, db):
+            continue
+        if _has_recent_session(guest_uid, host_uid, db):
+            continue
+    
         host_prefs = row["prefs_snapshot"]
 
         host_profile = _get_profile(uid=host_uid, db=db)
@@ -382,6 +427,12 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
     potential_sessions = db.execute(stmt, {"guest_uid": guest_uid}).mappings().all()
 
     for row in potential_sessions:
+        host_uid = row["host_uid"]
+        if _have_matched_before(guest_uid, host_uid, db):
+            continue
+        if _has_recent_session(guest_uid, host_uid, db):
+            continue
+    
         host_prefs = row["host_prefs"]
         host_profile = {
             "birthdate": row["host_birthdate"],
