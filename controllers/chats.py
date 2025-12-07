@@ -8,11 +8,13 @@ from sqlalchemy import text
 from controllers.user import _get_user_by_id
 
 def _get_last_message_for_pair(
-    session_id: UUID,
-    user_a_uid: UUID,
-    user_b_uid: UUID,
+    session_id,
+    user_a_uid,
+    user_b_uid,
     db: Session
 ) -> Optional[Dict[str, Any]]:
+    a = str(user_a_uid)
+    b = str(user_b_uid)
 
     stmt_session = text("""
         SELECT
@@ -37,8 +39,8 @@ def _get_last_message_for_pair(
 
     session_last = db.execute(stmt_session, {
         "session_id": str(session_id),
-        "a": str(user_a_uid),
-        "b": str(user_b_uid)
+        "a": a,
+        "b": b
     }).mappings().first()
 
     stmt_direct = text("""
@@ -60,16 +62,17 @@ def _get_last_message_for_pair(
     """)
 
     direct_last = db.execute(stmt_direct, {
-        "a": str(user_a_uid),
-        "b": str(user_b_uid)
+        "a": a,
+        "b": b
     }).mappings().first()
 
     if session_last and direct_last:
         return session_last if session_last["created_at"] >= direct_last["created_at"] else direct_last
     return session_last or direct_last
 
-
 def _get_user_chats(uid: UUID, db: Session) -> List[Dict[str, Any]]:
+    uid_str = str(uid)
+
     stmt = text("""
         SELECT
             id,
@@ -83,7 +86,7 @@ def _get_user_chats(uid: UUID, db: Session) -> List[Dict[str, Any]]:
         ORDER BY last_message_at DESC
     """)
 
-    chats = db.execute(stmt, {"uid": str(uid)}).mappings().all()
+    chats = db.execute(stmt, {"uid": uid_str}).mappings().all()
     result: List[Dict[str, Any]] = []
 
     for c in chats:
@@ -91,17 +94,21 @@ def _get_user_chats(uid: UUID, db: Session) -> List[Dict[str, Any]]:
         user_b_uid = c["user_b_uid"]
         session_id = c["match_session_id"]
 
-        other_uid = user_b_uid if user_a_uid == uid else user_a_uid
+        user_a_uid_str = str(user_a_uid)
+        user_b_uid_str = str(user_b_uid)
 
-        other_user = _get_user_by_id(uid=str(other_uid), db=db)
-        if not other_user:
-            continue
+        if user_a_uid_str == uid_str:
+            other_uid_str = user_b_uid_str
+        else:
+            other_uid_str = user_a_uid_str
+
+        other_user = _get_user_by_id(uid=other_uid_str, db=db)
 
         last_message = _get_last_message_for_pair(
-            session_id,
-            user_a_uid,
-            user_b_uid,
-            db
+            session_id=session_id,
+            user_a_uid=user_a_uid_str,
+            user_b_uid=user_b_uid_str,
+            db=db,
         )
 
         result.append({
@@ -109,14 +116,15 @@ def _get_user_chats(uid: UUID, db: Session) -> List[Dict[str, Any]]:
             "match_session_id": session_id,
             "last_message_at": c["last_message_at"],
             "status": c["status"],
+            "other_user_uid": other_uid_str,
             "other_user": other_user,
             "last_message": last_message,
         })
 
     return result
 
-
 def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
+    uid_str = str(uid)
 
     stmt = text("""
         SELECT
@@ -135,7 +143,7 @@ def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
 
     chat = db.execute(stmt, {
         "chat_id": str(chat_id),
-        "uid": str(uid)
+        "uid": uid_str
     }).mappings().first()
 
     if not chat:
@@ -145,9 +153,15 @@ def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
     user_b_uid = chat["user_b_uid"]
     session_id = chat["match_session_id"]
 
-    other_uid = user_b_uid if user_a_uid == uid else user_a_uid
-    other_user = _get_user_by_id(uid=str(other_uid), db=db)
+    user_a_uid_str = str(user_a_uid)
+    user_b_uid_str = str(user_b_uid)
 
+    if user_a_uid_str == uid_str:
+        other_uid_str = user_b_uid_str
+    else:
+        other_uid_str = user_a_uid_str
+
+    other_user = _get_user_by_id(uid=other_uid_str, db=db)
     if not other_user:
         raise HTTPException(status_code=404, detail="Chat participant not found")
 
@@ -171,8 +185,8 @@ def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
 
     session_msgs = db.execute(stmt_session_msgs, {
         "session_id": str(session_id),
-        "a": str(user_a_uid),
-        "b": str(user_b_uid)
+        "a": user_a_uid_str,
+        "b": user_b_uid_str
     }).mappings().all()
 
     stmt_direct_msgs = text("""
@@ -192,8 +206,8 @@ def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
     """)
 
     direct_msgs = db.execute(stmt_direct_msgs, {
-        "a": str(user_a_uid),
-        "b": str(user_b_uid)
+        "a": user_a_uid_str,
+        "b": user_b_uid_str
     }).mappings().all()
 
     merged = list(session_msgs) + list(direct_msgs)
@@ -204,6 +218,8 @@ def _get_chat_detail(chat_id: UUID, uid: UUID, db: Session) -> Dict[str, Any]:
         "match_session_id": session_id,
         "last_message_at": chat["last_message_at"],
         "status": chat["status"],
+        "other_user_uid": other_uid_str,
         "other_user": other_user,
         "messages": merged,
     }
+

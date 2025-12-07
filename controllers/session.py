@@ -4,7 +4,6 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from typing import Mapping, Optional
 
-from schemas.user import UserInfoSchema
 from schemas.session import SessionSchema, CreateSessionSchema
 from schemas.session.status import SessionStatusEnum
 from controllers.matchmaking import _user_in_queue, _leave_queue, _join_queue

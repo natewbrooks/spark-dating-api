@@ -11,7 +11,7 @@ router = APIRouter(prefix="/profile", tags=["Profile"])
 router.include_router(gender_router)
 router.include_router(interests_router)
 router.include_router(orientation_router)
-router.include_router(profile_router)
 router.include_router(photos_router)
+router.include_router(profile_router)
 
 __all__=["router"]

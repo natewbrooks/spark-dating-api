@@ -18,6 +18,7 @@ class ChatListItemSchema(BaseModel):
     match_session_id: UUID
     last_message_at: datetime
     status: str
+    other_user_uid: UUID
     other_user: UserInfoSchema
     last_message: Optional[ChatMessageSchema]
 
@@ -26,5 +27,6 @@ class ChatDetailSchema(BaseModel):
     match_session_id: UUID
     last_message_at: datetime
     status: str
+    other_user_uid: UUID
     other_user: UserInfoSchema
     messages: List[ChatMessageSchema]
