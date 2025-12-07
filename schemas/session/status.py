@@ -3,5 +3,5 @@ from enum import Enum
 class SessionStatusEnum(Enum):
     open = "open"
     closed = "closed"
-    matched = "matched"
+    found = "found"
     abandoned = "abandoned"

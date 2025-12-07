@@ -32,7 +32,7 @@ def enqueue(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
     After joining, frontend should:
     1. Start polling GET /matchmaking/me/poll every 3 seconds
     2. Show "Searching for match..." UI with countdown
-    3. Continue until status is 'matched' or 'timeout'
+    3. Continue until status is 'found' or 'timeout'
     
     Returns queue entry information.
     """
@@ -50,22 +50,22 @@ def enqueue(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
 
 
 @router.get("/poll")
-def poll_for_match(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
+async def poll_for_match(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
     """
     Poll for match status. Frontend should call this every POLL_INTERVAL seconds.
     
     Response status values:
     - 'searching': Still looking for match, keep polling
-    - 'matched': Match found! Join the session
+    - 'found': Match found! Join the session
     - 'timeout': Created session as host, wait for guest
     - 'cancelled': User left queue (edge case)
     
     Frontend should:
     1. If status='searching': Keep polling
-    2. If status='matched' or 'timeout': Stop polling, join WebSocket session
+    2. If status='found' or 'timeout': Stop polling, join WebSocket session
     3. If status='cancelled': Handle error state
     """
-    return _poll_for_match(uid=uid, db=db)
+    return await _poll_for_match(uid=uid, db=db)
 
 
 @router.delete("/queue")
@@ -77,7 +77,7 @@ def dequeue(uid: str = Depends(auth_user), db: Session = Depends(get_db)):
     result = _leave_queue(uid=uid, db=db)
     
     if not result:
-        return {"message": "User not in queue (already matched or expired)"}
+        return {"message": "User not in queue (already found or expired)"}
     
     return {
         "message": "Left matchmaking queue",
@@ -107,7 +107,6 @@ def exit_matchmaking_session(uid: str = Depends(auth_user), db: Session = Depend
     - Leaves any active session without re-queuing them
     """
     return _exit_matchmaking(uid=uid, db=db)
-
 
 # Session state transitions:
 # open → closed (host leaves, no guest)

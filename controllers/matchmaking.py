@@ -5,11 +5,11 @@ from fastapi.encoders import jsonable_encoder
 import json
 from datetime import datetime, timedelta, date
 from typing import Optional, Dict, Any
-from logging import log
 import logging
 
 from controllers.preferences import _get_user_prefs
 from controllers.profile import _get_profile
+import uuid
 
 # Configurable matchmaking settings
 MATCHMAKING_TIMEOUT_SECONDS = 15
@@ -394,9 +394,8 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
 
     return None
 
-def _poll_for_match(uid: str, db: Session):
+async def _poll_for_match(uid: str, db: Session):
     from controllers.session import _get_active_session
-    
     
     session = _get_active_session(uid=uid, db=db)
     if session:
@@ -411,7 +410,7 @@ def _poll_for_match(uid: str, db: Session):
             _leave_queue(uid=uid, db=db)
             
         return {
-            "status": "matched",
+            "status": "found",
             "role": role,
             "session": session_dict,
             "message": "Match found!",
@@ -458,10 +457,10 @@ def _poll_for_match(uid: str, db: Session):
         _leave_queue(uid=uid, db=db)
         _leave_queue(uid=host_uid, db=db)
 
-        _notify_host_of_match(host_uid=host_uid, session_id=session_dict["id"], guest_uid=uid)
+        await _notify_users_of_session_found(host_uid=host_uid, session_id=session_dict["id"], guest_uid=uid)
 
         return {
-            "status": "matched",
+            "status": "found",
             "role": "guest",
             "session": session_dict,
             "message": "Match found!",
@@ -500,10 +499,10 @@ def _poll_for_match(uid: str, db: Session):
         session = _join_session_by_id(session_id=session_id, guest_uid=uid, db=db)
         _leave_queue(uid=uid, db=db)
 
-        _notify_host_of_match(session["host_uid"], session["id"], uid)
+        await _notify_users_of_session_found(session["host_uid"], session["id"], uid)
 
         return {
-            "status": "matched",
+            "status": "found",
             "role": "guest",
             "session": dict(session),
             "message": "Match found!",
@@ -580,29 +579,372 @@ def _get_matchmaking_state(uid: str, db: Session) -> dict:
         "config": config,
     }
 
-def _notify_host_of_match(host_uid: str, session_id: str, guest_uid: str):
-    try:
-        from services.sockets import user_sid_map, socket_manager
-        import asyncio
+async def _notify_users_of_session_found(host_uid: str, session_id: str, guest_uid: str):
+    log = logging.getLogger("matchmaking")
+    
+    from services.sockets import user_sid_map, socket_manager
 
-        if socket_manager is None:
-            return
+    if socket_manager is None:
+        return
 
-        host_sid = user_sid_map.get(host_uid)
-        if not host_sid:
-            return
+    notifications = [
+        (host_uid, guest_uid),  # User 1 receives notification about User 2
+        (guest_uid, host_uid)   # User 2 receives notification about User 1
+    ]
+    
+    for recipient_uid, partner_uid in notifications:
+        try:
+            recipient_uid_str = str(recipient_uid)
+            partner_uid_str = str(partner_uid)
+            recipient_sid = user_sid_map.get(recipient_uid_str)
 
-        loop = asyncio.get_event_loop()
-        loop.create_task(
-            socket_manager.emit(
-                "match_found",
+            if not recipient_sid:
+                log.info(f"Recipient {recipient_uid_str} not connected, skipping socket notification.")
+                continue
+
+            await socket_manager.emit(
+                "session_found",
                 {
-                    "session_id": session_id,
-                    "guest_uid": guest_uid,
+                    "role": "host" if str(host_uid) == str(recipient_uid) else "guest",
+                    "session_id": str(session_id),
+                    "partner_uid": partner_uid_str,
                     "message": "A match has been found!",
                 },
-                room=host_sid,
+                room=recipient_sid,
             )
-        )
-    except Exception as e:
-        print(f"Failed to send WebSocket notification: {e}")
+            log.info(f"Match notification sent to {recipient_uid_str} (partner: {partner_uid_str}) for session {session_id}.")
+
+        except Exception as e:
+            # Catch errors for this specific user without stopping the whole process
+            log.error(f"Failed to send WebSocket notification to {recipient_uid_str}: {e}")
+
+async def _match_user(uid: str, db: Session):
+    log = logging.getLogger("matchmaking")
+    from controllers.session import _get_active_session
+    
+    session = _get_active_session(uid=uid, db=db)
+    if not session:
+        raise HTTPException(status_code=404, detail="User is not in an active session")
+
+    session_dict = dict(session)
+    host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
+    guest_uid = str(session_dict.get("guest_uid")) if session_dict.get("guest_uid") else None
+    current_uid = str(uid)
+
+    if current_uid == host_uid:
+        other_uid = guest_uid
+    elif current_uid == guest_uid:
+        other_uid = host_uid
+    else:
+        raise HTTPException(status_code=400, detail="User is not part of this session")
+
+    if not other_uid:
+        raise HTTPException(status_code=400, detail="No partner in this session")
+
+    session_id = session_dict["id"]
+
+    # Check if interaction already exists
+    existing = db.execute(
+        text(
+            """
+            SELECT *
+            FROM sessions.interactions
+            WHERE kind = 'match'
+              AND from_uid = :from_uid
+              AND to_uid = :to_uid
+              AND session_id = :session_id
+            LIMIT 1
+            """
+        ),
+        {
+            "from_uid": uid,
+            "to_uid": other_uid,
+            "session_id": session_id,
+        },
+    ).mappings().first()
+
+    if existing:
+        interaction_row = existing
+    else:
+        interaction_row = db.execute(
+            text(
+                """
+                INSERT INTO sessions.interactions (kind, created_at, from_uid, to_uid, session_id)
+                VALUES ('match', NOW(), :from_uid, :to_uid, :session_id)
+                RETURNING *
+                """
+            ),
+            {
+                "from_uid": uid,
+                "to_uid": other_uid,
+                "session_id": session_id,
+            },
+        ).mappings().first()
+
+    # Check if the other user has also matched (reciprocal)
+    reciprocal = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM sessions.interactions
+            WHERE kind = 'match'
+              AND from_uid = :other_uid
+              AND to_uid = :from_uid
+              AND session_id = :session_id
+            LIMIT 1
+            """
+        ),
+        {
+            "from_uid": uid,
+            "other_uid": other_uid,
+            "session_id": session_id,
+        },
+    ).mappings().first()
+
+    is_mutual = reciprocal is not None
+
+    # Get user's display name
+    user_row = db.execute(
+        text("SELECT first_name FROM users.users WHERE id = :id LIMIT 1"),
+        {"id": uid},
+    ).mappings().first()
+
+    display_name = user_row["first_name"] if user_row and user_row["first_name"] else "Someone"
+    content = f"{display_name} is interested!"
+
+    # Create system message in session chat
+    session_message_row = db.execute(
+        text(
+            """
+            INSERT INTO sessions.chats (
+                session_id,
+                author_uid,
+                content,
+                is_system,
+                created_at
+            )
+            VALUES (:session_id, :author_uid, :content, true, NOW())
+            RETURNING id, session_id, author_uid, content, is_system, created_at
+            """
+        ),
+        {
+            "session_id": session_id,
+            "author_uid": uid,
+            "content": content,
+        },
+    ).mappings().first()
+
+    msg_payload = {
+        "id": str(session_message_row["id"]),
+        "session_id": str(session_message_row["session_id"]),
+        "author_uid": str(session_message_row["author_uid"]),
+        "content": session_message_row["content"],
+        "created_at": session_message_row["created_at"].isoformat() + "Z",
+        "system": bool(session_message_row["is_system"]),
+    }
+
+    # Send WebSocket notifications to both users using the working pattern
+    from services.sockets import user_sid_map, socket_manager
+    
+    
+    if socket_manager is not None:
+        from services.sockets import user_sid_map
+        
+        # Prepare notifications for both users
+        notifications = [
+            (uid, other_uid), # Sender receives confirmation
+            (other_uid, uid) # Recipient receives notification
+        ]
+        
+        for recipient_uid, from_uid in notifications:
+            try:
+                recipient_uid_str = str(recipient_uid)
+                from_uid_str = str(from_uid)
+                recipient_sid = user_sid_map.get(recipient_uid_str)
+
+                if not recipient_sid:
+                    log.info(f"User {recipient_uid_str} not connected, skipping match notification.")
+                    continue
+
+                # Send chat_received event
+                await socket_manager.emit(
+                    "chat_received",
+                    msg_payload,
+                    room=recipient_sid,
+                )
+                log.info(f"Match chat notification sent to {recipient_uid_str} for session {session_id}.")
+
+                # Send match_interaction event to notify about the match action
+                await socket_manager.emit(
+                    "match_interaction",
+                    {
+                        "from_uid": from_uid_str,
+                        "to_uid": recipient_uid_str,
+                        "session_id": str(session_id),
+                        "is_mutual": is_mutual,
+                        "message": f"{display_name} is interested!" if from_uid_str == str(uid) else f"{display_name} is interested!",
+                    },
+                    room=recipient_sid,
+                )
+                log.info(f"Match interaction event sent to {recipient_uid_str}.")
+
+            except Exception as e:
+                log.error(f"Failed to send WebSocket notification to {recipient_uid_str}: {e}")
+
+    # If mutual, create chat entry
+    mutual_chat_row = None
+    if is_mutual:
+        a, b = sorted([str(uid), str(other_uid)])
+        existing_chat = db.execute(
+            text(
+                """
+                SELECT *
+                FROM users.chats
+                WHERE user_a_uid = :a
+                  AND user_b_uid = :b
+                LIMIT 1
+                """
+            ),
+            {"a": a, "b": b},
+        ).mappings().first()
+
+        if not existing_chat:
+            mutual_chat_row = db.execute(
+                text(
+                    """
+                    INSERT INTO users.chats (
+                        user_a_uid,
+                        user_b_uid,
+                        match_session_id,
+                        last_message_at,
+                        status
+                    )
+                    VALUES (:a, :b, :session_id, NOW(), 'active')
+                    RETURNING *
+                    """
+                ),
+                {"a": a, "b": b, "session_id": session_id},
+            ).mappings().first()
+            log.info(f"Created mutual chat between {a} and {b}.")
+        else:
+            mutual_chat_row = existing_chat
+            log.info(f"Mutual chat already exists between {a} and {b}.")
+            
+        # Notify both users of mutual match
+        if socket_manager is not None:
+            for target_uid in (str(uid), str(other_uid)):
+                try:
+                    target_sid = user_sid_map.get(target_uid)
+                    if target_sid:
+                        await socket_manager.emit(
+                            "mutual_match",
+                            {
+                                "session_id": str(session_id),
+                                "chat_id": str(mutual_chat_row["id"]) if mutual_chat_row else None,
+                                "partner_uid": str(other_uid) if target_uid == str(uid) else str(uid),
+                                "message": "It's a mutual match!",
+                            },
+                            room=target_sid,
+                        )
+                        log.info(f"Mutual match notification sent to {target_uid}.")
+                except Exception as e:
+                    log.error(f"Failed to send mutual match notification to {target_uid}: {e}")
+
+    return {
+        "message": "Match recorded",
+        "session_id": str(session_id),
+        "you_uid": str(uid),
+        "other_uid": str(other_uid),
+        "interaction": dict(interaction_row) if interaction_row else None,
+        "is_mutual": is_mutual,
+        "chat": dict(mutual_chat_row) if mutual_chat_row else None,
+        "system_message": msg_payload,
+    }
+    
+def _get_match_status(uid: str, db: Session):
+    """
+    Get the match status for the current user in their active session.
+    Returns whether the current user has matched, whether the other user has matched,
+    and whether it's mutual.
+    """
+    from controllers.session import _get_active_session
+    
+    session = _get_active_session(uid=uid, db=db)
+    if not session:
+        raise HTTPException(status_code=404, detail="User is not in an active session")
+
+    session_dict = dict(session)
+    host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
+    guest_uid = str(session_dict.get("guest_uid")) if session_dict.get("guest_uid") else None
+    current_uid = str(uid)
+
+    if current_uid == host_uid:
+        other_uid = guest_uid
+    elif current_uid == guest_uid:
+        other_uid = host_uid
+    else:
+        raise HTTPException(status_code=400, detail="User is not part of this session")
+
+    if not other_uid:
+        # No partner yet, so no matches
+        return {
+            "you_matched": False,
+            "they_matched": False,
+            "is_mutual": False,
+        }
+
+    session_id = session_dict["id"]
+
+    # Check if current user has matched the other user
+    you_matched = db.execute(
+        text(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM sessions.interactions
+                WHERE kind = 'match'
+                  AND from_uid = :from_uid
+                  AND to_uid = :to_uid
+                  AND session_id = :session_id
+            ) as matched
+            """
+        ),
+        {
+            "from_uid": uid,
+            "to_uid": other_uid,
+            "session_id": session_id,
+        },
+    ).mappings().first()
+
+    # Check if other user has matched the current user
+    they_matched = db.execute(
+        text(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM sessions.interactions
+                WHERE kind = 'match'
+                  AND from_uid = :from_uid
+                  AND to_uid = :to_uid
+                  AND session_id = :session_id
+            ) as matched
+            """
+        ),
+        {
+            "from_uid": other_uid,
+            "to_uid": uid,
+            "session_id": session_id,
+        },
+    ).mappings().first()
+
+    you_matched_bool = you_matched["matched"] if you_matched else False
+    they_matched_bool = they_matched["matched"] if they_matched else False
+    is_mutual = you_matched_bool and they_matched_bool
+
+    return {
+        "you_matched": you_matched_bool,
+        "they_matched": they_matched_bool,
+        "is_mutual": is_mutual,
+        "session_id": str(session_id),
+        "other_uid": str(other_uid),
+    }

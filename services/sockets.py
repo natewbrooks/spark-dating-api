@@ -5,8 +5,8 @@ from fastapi.exceptions import HTTPException
 
 from config import settings
 from models.db import SessionLocal
-from controllers.session import _add_chat_message, _get_active_session_by_id
 from controllers.user import _set_user_online, _set_user_offline
+
 
 SECRET = settings.supabase_jwt_secret
 
@@ -124,6 +124,7 @@ def register_socket_handlers(sm):
 
         db = SessionLocal()
         try:
+            from controllers.session import _get_active_session_by_id
             session = _get_active_session_by_id(session_id, db)
             logging.info(f"join_session fetched session={session}")
 
@@ -211,6 +212,8 @@ def register_socket_handlers(sm):
             logging.info(
                 f"Persisting chat_message: uid={uid}, session_id={session_id}, content_len={len(content)}"
             )
+            
+            from controllers.session import _add_chat_message, _get_active_session_by_id
 
             message_data = _add_chat_message(
                 session_id=session_id,
@@ -243,11 +246,11 @@ def register_socket_handlers(sm):
                 return
 
             payload = {
-                "session_id": session_id,          # already str
-                "author_uid": uid,                 # already str
+                "session_id": session_id, 
+                "author_uid": uid,
                 "content": content,
-                "created_at": created_at_str,      # str
-                "id": message_id_str,              # str
+                "created_at": created_at_str,
+                "id": message_id_str,
             }
 
             room = f"session:{session_id}"

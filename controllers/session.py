@@ -253,7 +253,7 @@ def _add_chat_message(session_id: str, author_uid: str, content: str, db: Sessio
     stmt = text("""
         INSERT INTO sessions.chats (session_id, author_uid, receiver_uid, content, created_at)
         VALUES (:session_id, :author_uid, :receiver_uid, :content, NOW())
-        RETURNING id, created_at, content
+        RETURNING *
     """)
 
     res = (
@@ -295,12 +295,7 @@ def _get_session_chats(uid: str, db: Session, limit: int = 100):
     session_id = str(session["id"])
 
     stmt = text("""
-        SELECT id,
-               session_id,
-               author_uid,
-               receiver_uid,
-               content,
-               created_at
+        SELECT *
         FROM sessions.chats
         WHERE session_id = :session_id
         ORDER BY created_at ASC

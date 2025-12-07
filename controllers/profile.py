@@ -26,7 +26,7 @@ def _get_profile(uid: str, db: Session):
         WHERE p.uid = :uid
         LIMIT 1
     """)
-    profile = db.execute(stmt, {'uid': uid}).mappings().first()
+    profile = db.execute(stmt, {'uid': uid}).mappings().one_or_none()
     
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
