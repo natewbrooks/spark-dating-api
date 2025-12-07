@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from fastapi.encoders import jsonable_encoder
 from fastapi import HTTPException
+from typing import Dict, Any
 
 from schemas.preferences import UserProfilePreferencesSchema
 from controllers.user import _user_exists
@@ -16,13 +17,33 @@ def _user_prefs_exist(uid: str, db: Session):
     stmt = text("""SELECT 1 FROM users.preferences WHERE uid = :uid LIMIT 1""")
     return bool(db.execute(stmt, {"uid": uid}).scalar())
 
-def _get_user_prefs(uid: str, db: Session):
+def _get_user_prefs(uid: str, db: Session) -> Dict[str, Any]:
+    """
+    Retrieves a user's matchmaking preferences and converts the 
+    'target_gender_id' UUID into a human-readable string.
+    """
+    from .gender import _gender_id_to_name
     stmt = text("""SELECT * FROM users.preferences WHERE uid = :uid LIMIT 1""")
-    prefs = db.execute(stmt, {"uid": uid}).mappings().one_or_none()
-    if not prefs:
+    prefs_result = db.execute(stmt, {"uid": uid}).mappings().one_or_none()
+    
+    if not prefs_result:
         raise HTTPException(status_code=404, detail=f"User with id '{uid}' has no preferences!")
         
-    return prefs 
+    prefs = dict(prefs_result)
+    
+    target_gender_id = prefs.get("target_gender_id")
+    
+    if target_gender_id is not None:
+        try:
+            # Call the helper function to get the string name
+            target_gender_name = _gender_id_to_name(id=target_gender_id, db=db)
+            
+            # Add the new key to the preferences dictionary
+            prefs["target_gender"] = target_gender_name
+        except HTTPException:
+            prefs["target_gender"] = None
+
+    return prefs
 
 
 def _create_user_prefs(payload: UserProfilePreferencesSchema, uid: str, db: Session):
