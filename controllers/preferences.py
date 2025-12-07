@@ -18,7 +18,7 @@ def _user_prefs_exist(uid: str, db: Session):
 
 def _get_user_prefs(uid: str, db: Session):
     stmt = text("""SELECT * FROM users.preferences WHERE uid = :uid LIMIT 1""")
-    prefs = db.execute(stmt, {"uid": uid}).mappings().one()
+    prefs = db.execute(stmt, {"uid": uid}).mappings().one_or_none()
     if not prefs:
         raise HTTPException(status_code=404, detail=f"User with id '{uid}' has no preferences!")
         
