@@ -51,6 +51,11 @@ def _update_profile_interests(payload: List[InterestsEnum], uid: str, db: Sessio
     if not _user_exists(uid=uid, db=db):
         raise HTTPException(status_code=404, detail=f"User with id '{uid}' does not exist!")
     
+    # If the payload is None or empty, just delete existing interests and return.
+    if not payload:
+        _delete_profile_interests(uid=uid, db=db)
+        return {"ok": True}
+    
     payload = jsonable_encoder(payload)
     interest_ids = _interests_to_id_arr(payload, db=db) # List of str
     _delete_profile_interests(uid=uid, db=db) # Delete existing user interests for said user
