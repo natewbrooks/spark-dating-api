@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 class UserInfoSchema(BaseModel):
-    fname: str
-    lname: str
+    first_name: str
+    last_name: str
     birthdate: datetime
     

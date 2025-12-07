@@ -94,7 +94,7 @@ def _update_user_info(payload: UserInfoSchema, uid: str, db: Session):
         RETURNING first_name, last_name, birthdate
     """)
     
-    db.execute(stmt, {"fn": payload.get("fname"), "ln": payload.get("lname"), "dob": payload.get("dob"), "uid": uid})
+    db.execute(stmt, {"fn": payload.get("first_name"), "ln": payload.get("last_name"), "dob": payload.get("birthdate"), "uid": uid})
     return _get_user_by_id(uid, db)
 
 def _soft_delete_user(uid: str, db: Session):
@@ -109,3 +109,4 @@ def _soft_delete_user(uid: str, db: Session):
         RETURNING *
     """)
     return db.execute(stmt, {"uid": uid}).mappings().first()
+
