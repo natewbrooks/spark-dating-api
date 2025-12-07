@@ -64,7 +64,7 @@ def _create_user_prefs(payload: UserProfilePreferencesSchema, uid: str, db: Sess
 
 def _update_user_prefs(payload: UserProfilePreferencesSchema, uid: str, db: Session):
     if not _user_prefs_exist(uid=uid, db=db):
-        # Fallback to creation if profile doesn't exist
+        # Fallback to creation if preferences don't exist
         return _create_user_prefs(payload=payload, uid=uid, db=db)
         # raise HTTPException(status_code=404, detail=f"The user with id '{uid}' does not have preferences created yet!")
 
