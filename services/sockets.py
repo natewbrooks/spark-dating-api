@@ -66,21 +66,22 @@ def register_socket_handlers(sm):
             await sm.emit("error", {"message": "Invalid or expired authorization token"}, room=sid)
             return False
 
-        user_sid_map[uid] = sid
-        sid_user_map[sid] = uid
+        uid_str = str(uid)
+        user_sid_map[uid_str] = sid
+        sid_user_map[sid] = uid_str
 
         db = SessionLocal()
         try:
-            _set_user_online(uid=uid, db=db)
+            _set_user_online(uid=uid_str, db=db)
             db.commit()
-            logging.info(f"User {uid} set ONLINE via socket")
+            logging.info(f"User {uid_str} set ONLINE via socket")
         except SQLAlchemyError as e:
             db.rollback()
-            logging.error(f"DB error setting user ONLINE for uid={uid}: {e}")
+            logging.error(f"DB error setting user ONLINE for uid={uid_str}: {e}")
         finally:
             db.close()
 
-        logging.info(f"User {uid} connected with SID {sid}")
+        logging.info(f"User {uid_str} connected with SID {sid}")
         return True
 
     @sm.on("disconnect")
@@ -88,25 +89,33 @@ def register_socket_handlers(sm):
         uid = sid_user_map.pop(sid, None)
         if not uid:
             return
-        
+
+        uid_str = str(uid)
+
         db = SessionLocal()
         try:
-            _set_user_offline(uid=uid, db=db)
+            _set_user_offline(uid=uid_str, db=db)
             db.commit()
-            logging.info(f"User {uid} set OFFLINE via socket")
+            logging.info(f"User {uid_str} set OFFLINE via socket")
         except SQLAlchemyError as e:
             db.rollback()
-            logging.error(f"DB error setting user OFFLINE for uid={uid}: {e}")
+            logging.error(f"DB error setting user OFFLINE for uid={uid_str}: {e}")
         finally:
             db.close()
 
-        user_sid_map.pop(uid, None)
-        logging.info(f"User {uid} disconnected SID {sid}")
+        user_sid_map.pop(uid_str, None)
+        logging.info(f"User {uid_str} disconnected SID {sid}")
 
     @sm.on("join_session")
     async def handle_join_session(sid, data):
-        uid = sid_user_map.get(sid)
-        session_id = data.get("session_id") if isinstance(data, dict) else None
+        raw_uid = sid_user_map.get(sid)
+        uid = str(raw_uid) if raw_uid is not None else None
+        session_id = None
+        if isinstance(data, dict):
+            sid_val = data.get("session_id")
+            if sid_val is not None:
+                session_id = str(sid_val)
+
         logging.info(f"join_session from SID={sid}, uid={uid}, data={data}")
 
         if not uid or not session_id:
@@ -116,14 +125,25 @@ def register_socket_handlers(sm):
         db = SessionLocal()
         try:
             session = _get_active_session_by_id(session_id, db)
+            logging.info(f"join_session fetched session={session}")
+
             if not session:
                 await sm.emit("error", {"message": "Session not found or inactive"}, room=sid)
                 return
 
-            host_uid = session["host_uid"]
-            guest_uid = session["guest_uid"]
+            if isinstance(session, dict):
+                host_uid = session.get("host_uid")
+                guest_uid = session.get("guest_uid")
+            else:
+                host_uid = getattr(session, "host_uid", None)
+                guest_uid = getattr(session, "guest_uid", None)
 
-            if uid not in {host_uid, guest_uid}:
+            host_uid_str = str(host_uid) if host_uid is not None else None
+            guest_uid_str = str(guest_uid) if guest_uid is not None else None
+
+            logging.info(f"join_session uid={uid}, host_uid={host_uid_str}, guest_uid={guest_uid_str}")
+
+            if uid not in {host_uid_str, guest_uid_str}:
                 await sm.emit("error", {"message": "Not allowed to join this session"}, room=sid)
                 return
 
@@ -143,8 +163,14 @@ def register_socket_handlers(sm):
 
     @sm.on("leave_session")
     async def handle_leave_session(sid, data):
-        uid = sid_user_map.get(sid)
-        session_id = data.get("session_id") if isinstance(data, dict) else None
+        raw_uid = sid_user_map.get(sid)
+        uid = str(raw_uid) if raw_uid is not None else None
+
+        session_id = None
+        if isinstance(data, dict):
+            sid_val = data.get("session_id")
+            if sid_val is not None:
+                session_id = str(sid_val)
 
         if not uid or not session_id:
             return
@@ -156,16 +182,21 @@ def register_socket_handlers(sm):
 
     @sm.on("chat_message")
     async def handle_chat_message(sid, data):
-        uid = sid_user_map.get(sid)
+        raw_uid = sid_user_map.get(sid)
+        uid = str(raw_uid) if raw_uid is not None else None
+
         if not isinstance(data, dict):
             await sm.emit("error", {"message": "Invalid message format"}, room=sid)
             return
 
         session_id = data.get("session_id")
+        if session_id is not None:
+            session_id = str(session_id)
+
         content = data.get("content")
 
         if not uid or not session_id or not content:
-            logging.warning(f"Invalid message payload or unauthenticated sender: {sid}")
+            logging.warning(f"Invalid message payload or unauthenticated sender: sid={sid}, uid={uid}, session_id={session_id}")
             await sm.emit("error", {"message": "Invalid message format"}, room=sid)
             return
 
@@ -178,6 +209,16 @@ def register_socket_handlers(sm):
                 db=db,
             )
 
+            if isinstance(message_data, dict):
+                created_at = message_data["created_at"]
+                message_id = message_data["id"]
+            else:
+                created_at = getattr(message_data, "created_at", None)
+                message_id = getattr(message_data, "id", None)
+
+            if created_at is None or message_id is None:
+                raise RuntimeError("message_data missing created_at or id")
+
             session = _get_active_session_by_id(session_id, db)
             if not session:
                 await sm.emit("error", {"message": "Chat session is no longer active"}, room=sid)
@@ -187,8 +228,8 @@ def register_socket_handlers(sm):
                 "session_id": session_id,
                 "author_uid": uid,
                 "content": content,
-                "created_at": message_data["created_at"].isoformat(),
-                "id": message_data["id"],
+                "created_at": created_at.isoformat(),
+                "id": message_id,
             }
 
             room = f"session:{session_id}"
@@ -201,7 +242,7 @@ def register_socket_handlers(sm):
             logging.error(f"DB error handling chat_message: {e}")
             await sm.emit("error", {"message": "Server error processing message"}, room=sid)
         except Exception as e:
-            logging.error(f"Critical error handling chat_message: {e}")
+            logging.exception(f"Critical error handling chat_message: {e}")
             await sm.emit("error", {"message": "Server error processing message"}, room=sid)
         finally:
             db.close()

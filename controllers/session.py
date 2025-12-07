@@ -216,37 +216,54 @@ def _leave_session(uid: str, db: Session):
     return res
 
 def _add_chat_message(session_id: str, author_uid: str, content: str, db: Session) -> Mapping:
-    """
-    Persists a new chat message to the sessions.chats table and validates session status/users.
-    """
-    
     session = _get_active_session_by_id(session_id, db)
     if not session:
-        raise HTTPException(status_code=404, detail=f"Session ID '{session_id}' is not currently active or open.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session ID '{session_id}' is not currently active or open."
+        )
 
-    # Determine Receiver UID for the schema
-    if session['host_uid'] == author_uid:
-        receiver_uid = session['guest_uid']
-    elif session['guest_uid'] == author_uid:
-        receiver_uid = session['host_uid']
+    host_raw = session["host_uid"]
+    guest_raw = session["guest_uid"]
+
+    host_uid = str(host_raw) if host_raw is not None else None
+    guest_uid = str(guest_raw) if guest_raw is not None else None
+    author_uid_str = str(author_uid)
+
+    if author_uid_str == host_uid:
+        receiver_uid = guest_uid
+    elif author_uid_str == guest_uid:
+        receiver_uid = host_uid
     else:
-        raise HTTPException(status_code=403, detail="User is not part of this active session.")
-    
-    # Check if a guest exists before inserting the message
-    if not receiver_uid:
-        raise HTTPException(status_code=400, detail="Cannot send chat message: Session is missing a guest user.")
+        raise HTTPException(
+            status_code=403,
+            detail="User is not part of this active session."
+        )
+
+    if receiver_uid is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot send chat message: Session is missing the other participant."
+        )
 
     stmt = text("""
         INSERT INTO sessions.chats (session_id, author_uid, receiver_uid, content, created_at)
         VALUES (:session_id, :author_uid, :receiver_uid, :content, NOW())
         RETURNING id, created_at, content
     """)
-    
-    res = db.execute(stmt, {
-        "session_id": session_id,
-        "author_uid": author_uid,
-        "receiver_uid": receiver_uid, 
-        "content": content
-    }).mappings().first()
-    
+
+    res = (
+        db.execute(
+            stmt,
+            {
+                "session_id": session_id,
+                "author_uid": author_uid_str,
+                "receiver_uid": receiver_uid,
+                "content": content,
+            },
+        )
+        .mappings()
+        .first()
+    )
+
     return res
