@@ -11,7 +11,7 @@ from schemas.chats import ChatListItemSchema, ChatDetailSchema
 
 router = APIRouter(prefix="/me/chats", tags=["Chats"])
 
-@router.get("/", response_model=List[ChatListItemSchema])
+@router.get("", response_model=List[ChatListItemSchema])
 def list_my_chats(uid: UUID = Depends(auth_user), db: Session = Depends(get_db)):
     return _get_user_chats(uid=uid, db=db)
 
