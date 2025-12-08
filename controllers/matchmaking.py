@@ -14,7 +14,7 @@ import uuid
 # Configurable matchmaking settings
 MATCHMAKING_TIMEOUT_SECONDS = 15
 MATCHMAKING_POLL_INTERVAL_SECONDS = 3
-RECENT_SESSION_COOLDOWN_MINUTES = 15
+RECENT_SESSION_COOLDOWN_MINUTES = 0
 
 def _get_queue(uid: str, db: Session):
     """Get user's current queue entry."""
@@ -328,9 +328,12 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
       must have AT LEAST ONE matching value in that field
     """
     log = logging.getLogger("matchmaking")
-    log.info("=== Checking compatibility ===")
+    log.info("┌─────────────────────────────────────────┐")
+    log.info("│  COMPATIBILITY CHECK                    │")
+    log.info("└─────────────────────────────────────────┘")
 
     # ========== CORE PREFERENCES ==========
+    log.info("📋 Core Preferences Check:")
     
     # Extract core preferences
     host_age_min = host_prefs.get('age_min', 18)
@@ -351,13 +354,18 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
     host_age = _calculate_age_from_dob(host_dob) if host_dob else 0
     guest_age = _calculate_age_from_dob(guest_dob) if guest_dob else 0
 
-    log.info(f"Ages -> Host: {host_age}, Guest: {guest_age}")
+    log.info(f"  Host: age={host_age}, wants ages [{host_age_min}-{host_age_max}], max_distance={host_max_distance}")
+    log.info(f"  Guest: age={guest_age}, wants ages [{guest_age_min}-{guest_age_max}], max_distance={guest_max_distance}")
 
     # Gender compatibility (both ways)
+    log.info("🚻 Gender Check:")
     host_gender_name = _normalize_value(host_profile.get("gender"))
     guest_gender_name = _normalize_value(guest_profile.get("gender"))
     host_target_name = _normalize_value(host_prefs.get("target_gender"))
     guest_target_name = _normalize_value(guest_prefs.get("target_gender"))
+
+    log.info(f"  Host is '{host_gender_name}', wants '{host_target_name}'")
+    log.info(f"  Guest is '{guest_gender_name}', wants '{guest_target_name}'")
 
     def accepts_gender(target, actual):
         if not target or target == "any":
@@ -365,25 +373,33 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
         return target == actual
 
     if not accepts_gender(host_target_name, guest_gender_name):
-        log.info(f"Gender fail: host wants {host_target_name}, guest is {guest_gender_name}")
+        log.info(f"  ✗ FAIL: Host wants '{host_target_name}' but guest is '{guest_gender_name}'")
         return False
 
     if not accepts_gender(guest_target_name, host_gender_name):
-        log.info(f"Gender fail: guest wants {guest_target_name}, host is {host_gender_name}")
+        log.info(f"  ✗ FAIL: Guest wants '{guest_target_name}' but host is '{host_gender_name}'")
         return False
 
+    log.info(f"  ✓ PASS: Gender compatibility OK")
+
     # Age compatibility (both ways)
+    log.info("🎂 Age Check:")
     if guest_age > 0:
         if not (host_age_min <= guest_age <= host_age_max):
-            log.info(f"Age fail: guest_age={guest_age} not in host range [{host_age_min}, {host_age_max}]")
+            log.info(f"  ✗ FAIL: Guest age {guest_age} not in host range [{host_age_min}, {host_age_max}]")
             return False
+        log.info(f"  ✓ Host accepts guest age {guest_age}")
 
     if host_age > 0:
         if not (guest_age_min <= host_age <= guest_age_max):
-            log.info(f"Age fail: host_age={host_age} not in guest range [{guest_age_min}, {guest_age_max}]")
+            log.info(f"  ✗ FAIL: Host age {host_age} not in guest range [{guest_age_min}, {guest_age_max}]")
             return False
+        log.info(f"  ✓ Guest accepts host age {host_age}")
+
+    log.info(f"  ✓ PASS: Age compatibility OK")
 
     # Distance compatibility (both ways)
+    log.info("📍 Distance Check:")
     host_coords = _parse_location(host_location)
     guest_coords = _parse_location(guest_location)
 
@@ -392,23 +408,33 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
         guest_lat, guest_lon = guest_coords
 
         distance_miles = _calculate_distance_miles(host_lat, host_lon, guest_lat, guest_lon)
-        log.info(f"Distance: {distance_miles:.1f} miles")
+        log.info(f"  Distance between users: {distance_miles:.1f} miles")
 
         if distance_miles > host_max_distance:
-            log.info(f"Distance fail: {distance_miles:.1f} > host max {host_max_distance}")
+            log.info(f"  ✗ FAIL: {distance_miles:.1f} miles > host max {host_max_distance}")
             return False
+        log.info(f"  ✓ Host accepts distance {distance_miles:.1f} miles")
 
         if distance_miles > guest_max_distance:
-            log.info(f"Distance fail: {distance_miles:.1f} > guest max {guest_max_distance}")
+            log.info(f"  ✗ FAIL: {distance_miles:.1f} miles > guest max {guest_max_distance}")
             return False
+        log.info(f"  ✓ Guest accepts distance {distance_miles:.1f} miles")
+
+        log.info(f"  ✓ PASS: Distance compatibility OK")
+    else:
+        log.info(f"  ⚠ WARNING: Location data missing, skipping distance check")
 
     # ========== EXTRA OPTIONS PREFERENCES ==========
     
     host_extra = host_prefs.get('extra_options', {}) or {}
     guest_extra = guest_prefs.get('extra_options', {}) or {}
     
+    log.info("🎯 Extra Preferences Check:")
+    
+    if not host_extra and not guest_extra:
+        log.info("  ℹ No extra preferences set by either user")
+    
     # Define preference fields to check
-    # Format: (preference_key, profile_key)
     preference_fields = [
         ('relationship_goal', 'relationship_goal'),
         ('personality_type', 'personality_type'),
@@ -431,42 +457,56 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
     ]
     
     # Check HOST preferences against GUEST profile
-    for pref_key, profile_key in preference_fields:
-        host_pref_filter = host_extra.get(pref_key)
-        
-        # Skip if host has no preference for this field
-        if not host_pref_filter:
-            continue
-        
-        # Skip if it's an empty list
-        if isinstance(host_pref_filter, list) and len(host_pref_filter) == 0:
-            continue
-        
-        guest_profile_value = guest_profile.get(profile_key)
-        
-        if not _check_preference_match(guest_profile_value, host_pref_filter):
-            log.info(f"Preference fail: host wants {pref_key}={host_pref_filter}, guest has {profile_key}={guest_profile_value}")
-            return False
+    if host_extra:
+        log.info("  🔍 Checking HOST preferences against GUEST profile:")
+        for pref_key, profile_key in preference_fields:
+            host_pref_filter = host_extra.get(pref_key)
+            
+            # Skip if host has no preference for this field
+            if not host_pref_filter:
+                continue
+            
+            # Skip if it's an empty list
+            if isinstance(host_pref_filter, list) and len(host_pref_filter) == 0:
+                continue
+            
+            guest_profile_value = guest_profile.get(profile_key)
+            
+            log.info(f"    • {pref_key}: host wants {host_pref_filter}, guest has {guest_profile_value}")
+            
+            if not _check_preference_match(guest_profile_value, host_pref_filter):
+                log.info(f"    ✗ FAIL: No match found")
+                return False
+            
+            log.info(f"    ✓ PASS: Match found")
     
     # Check GUEST preferences against HOST profile
-    for pref_key, profile_key in preference_fields:
-        guest_pref_filter = guest_extra.get(pref_key)
-        
-        # Skip if guest has no preference for this field
-        if not guest_pref_filter:
-            continue
-        
-        # Skip if it's an empty list
-        if isinstance(guest_pref_filter, list) and len(guest_pref_filter) == 0:
-            continue
-        
-        host_profile_value = host_profile.get(profile_key)
-        
-        if not _check_preference_match(host_profile_value, guest_pref_filter):
-            log.info(f"Preference fail: guest wants {pref_key}={guest_pref_filter}, host has {profile_key}={host_profile_value}")
-            return False
+    if guest_extra:
+        log.info("  🔍 Checking GUEST preferences against HOST profile:")
+        for pref_key, profile_key in preference_fields:
+            guest_pref_filter = guest_extra.get(pref_key)
+            
+            # Skip if guest has no preference for this field
+            if not guest_pref_filter:
+                continue
+            
+            # Skip if it's an empty list
+            if isinstance(guest_pref_filter, list) and len(guest_pref_filter) == 0:
+                continue
+            
+            host_profile_value = host_profile.get(profile_key)
+            
+            log.info(f"    • {pref_key}: guest wants {guest_pref_filter}, host has {host_profile_value}")
+            
+            if not _check_preference_match(host_profile_value, guest_pref_filter):
+                log.info(f"    ✗ FAIL: No match found")
+                return False
+            
+            log.info(f"    ✓ PASS: Match found")
 
-    log.info("✓ Users ARE compatible!")
+    log.info("┌─────────────────────────────────────────┐")
+    log.info("│  ✅ USERS ARE COMPATIBLE!               │")
+    log.info("└─────────────────────────────────────────┘")
     return True
 
 
@@ -475,6 +515,9 @@ def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile
     Find a compatible peer directly from the matchmaking_queue.
     Returns the UID of the peer if found, or None.
     """
+    log = logging.getLogger("matchmaking")
+    log.info(f"🔍 Searching queue for compatible peer for user {guest_uid}...")
+    
     stmt = text("""
         SELECT 
             q.uid,
@@ -489,19 +532,25 @@ def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile
     """)
 
     rows = db.execute(stmt, {"guest_uid": guest_uid}).mappings().all()
+    log.info(f"  Found {len(rows)} users in queue (excluding self)")
 
-    for row in rows:
+    for idx, row in enumerate(rows, 1):
         host_uid = row["uid"]
+        log.info(f"  Candidate {idx}/{len(rows)}: User {host_uid}")
         
         if _have_matched_before(guest_uid, host_uid, db):
+            log.info(f"    ⏭ Skip: Already matched before")
             continue
+            
         if _has_recent_session(guest_uid, host_uid, db):
+            log.info(f"    ⏭ Skip: Recent session cooldown")
             continue
     
         host_prefs = row["prefs_snapshot"]
 
         host_profile = _get_profile(uid=host_uid, db=db)
         if not host_profile:
+            log.info(f"    ⏭ Skip: No profile found")
             continue
 
         # If location is not present fall back to snapshot if needed
@@ -515,12 +564,19 @@ def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile
             host_profile=host_profile,
             guest_profile=guest_profile,
         ):
+            log.info(f"  ✅ Found compatible peer: {host_uid}")
             return host_uid
+        else:
+            log.info(f"    ❌ Not compatible")
 
+    log.info(f"  ❌ No compatible peers found in queue")
     return None
 
 
 def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: dict, db: Session) -> Optional[str]:
+    log = logging.getLogger("matchmaking")
+    log.info(f"🔍 Searching for compatible existing sessions for user {guest_uid}...")
+    
     stmt = text("""
         SELECT 
             s.id,
@@ -548,12 +604,19 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
     """)
 
     potential_sessions = db.execute(stmt, {"guest_uid": guest_uid}).mappings().all()
+    log.info(f"  Found {len(potential_sessions)} open sessions")
 
-    for row in potential_sessions:
+    for idx, row in enumerate(potential_sessions, 1):
         host_uid = row["host_uid"]
+        session_id = row["id"]
+        log.info(f"  Candidate {idx}/{len(potential_sessions)}: Session {session_id} (host: {host_uid})")
+        
         if _have_matched_before(guest_uid, host_uid, db):
+            log.info(f"    ⏭ Skip: Already matched before")
             continue
+            
         if _has_recent_session(guest_uid, host_uid, db):
+            log.info(f"    ⏭ Skip: Recent session cooldown")
             continue
     
         host_prefs = row["host_prefs"]
@@ -561,18 +624,28 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
         # Get full host profile for preference matching
         host_profile = _get_profile(uid=host_uid, db=db)
         if not host_profile:
+            log.info(f"    ⏭ Skip: No profile found")
             continue
 
         if _are_preferences_compatible(host_prefs, guest_prefs, host_profile, guest_profile):
+            log.info(f"  ✅ Found compatible session: {session_id}")
             return row["id"]
+        else:
+            log.info(f"    ❌ Not compatible")
 
+    log.info(f"  ❌ No compatible sessions found")
     return None
 
 async def _poll_for_match(uid: str, db: Session):
     from controllers.session import _get_active_session
+    log = logging.getLogger("matchmaking")
     
+    log.info(f"=== POLL FOR MATCH: User {uid} ===")
+    
+    # Check if user already has a session
     session = _get_active_session(uid=uid, db=db)
     if session:
+        log.info(f"User {uid} already has an active session")
         session_dict = dict(session)
 
         host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
@@ -581,6 +654,7 @@ async def _poll_for_match(uid: str, db: Session):
 
         role = "guest" if guest_uid == current_uid else "host"
         if _user_in_queue(uid=uid, db=db):
+            log.info(f"Removing user {uid} from queue (already in session)")
             _leave_queue(uid=uid, db=db)
             
         return {
@@ -590,19 +664,30 @@ async def _poll_for_match(uid: str, db: Session):
             "message": "Match found!",
         }
 
+    # Check if user is in queue
     if not _user_in_queue(uid=uid, db=db):
+        log.info(f"User {uid} not in queue and not in session")
         return {
             "status": "cancelled",
             "message": "User not in queue and not in session",
         }
 
+    # Get queue entry and calculate time elapsed
     queue_entry = _get_queue(uid=uid, db=db)
     enqueued_at = queue_entry["enqueued_at"]
     time_elapsed = (datetime.utcnow() - enqueued_at).total_seconds()
+    
+    log.info(f"User {uid} has been in queue for {time_elapsed:.1f} seconds")
 
+    # Get user's preferences and profile
     guest_prefs = queue_entry["prefs_snapshot"]
     guest_profile = _get_profile(uid=uid, db=db)
+    
+    log.info(f"User {uid} preferences: target_gender={guest_prefs.get('target_gender')}, age_range=[{guest_prefs.get('age_min')}-{guest_prefs.get('age_max')}], max_distance={guest_prefs.get('max_distance')}")
+    log.info(f"User {uid} profile: gender={guest_profile.get('gender')}, age={_calculate_age_from_dob(guest_profile.get('birthdate'))}")
 
+    # STEP 1: Try to find a compatible peer in the queue
+    log.info(f"STEP 1: Searching for compatible peer in queue...")
     peer_uid = _find_compatible_queue_peer(
         guest_uid=uid,
         guest_prefs=guest_prefs,
@@ -611,6 +696,7 @@ async def _poll_for_match(uid: str, db: Session):
     )
 
     if peer_uid:
+        log.info(f"✓ Found compatible peer in queue: {peer_uid}")
         from controllers.session import _create_session_from_queue, _join_session_by_id
 
         host_uid = peer_uid
@@ -618,6 +704,7 @@ async def _poll_for_match(uid: str, db: Session):
         host_mode_id = host_queue.get("mode_id")
         host_prefs_snapshot = host_queue["prefs_snapshot"]
 
+        log.info(f"Creating session with host={host_uid}, guest={uid}")
         session = _create_session_from_queue(
             host_uid=host_uid,
             mode_id=host_mode_id,
@@ -633,19 +720,25 @@ async def _poll_for_match(uid: str, db: Session):
 
         await _notify_users_of_session_found(host_uid=host_uid, session_id=session_dict["id"], guest_uid=uid)
 
+        log.info(f"✓ Successfully matched {uid} with {peer_uid} from queue")
         return {
             "status": "found",
             "role": "guest",
             "session": session_dict,
             "message": "Match found!",
         }
+    else:
+        log.info(f"✗ No compatible peers found in queue")
 
+    # STEP 2: Check if timeout reached - if so, create own session
     if time_elapsed >= MATCHMAKING_TIMEOUT_SECONDS:
+        log.info(f"STEP 2: Timeout reached ({time_elapsed:.1f}s >= {MATCHMAKING_TIMEOUT_SECONDS}s)")
         mode_id = queue_entry.get("mode_id")
         prefs_snapshot = queue_entry["prefs_snapshot"]
 
         from controllers.session import _create_session_from_queue
 
+        log.info(f"Creating session as host for user {uid}")
         session = _create_session_from_queue(
             host_uid=uid,
             mode_id=mode_id,
@@ -653,6 +746,7 @@ async def _poll_for_match(uid: str, db: Session):
             db=db,
         )
 
+        log.info(f"✓ Created session {session['id']} with user {uid} as host, waiting for guest...")
         return {
             "status": "timeout",
             "role": "host",
@@ -660,6 +754,8 @@ async def _poll_for_match(uid: str, db: Session):
             "message": "No matches found. Created session as host. Waiting for a compatible user...",
         }
 
+    # STEP 3: Try to find a compatible existing session to join
+    log.info(f"STEP 3: Searching for compatible existing sessions...")
     session_id = _find_compatible_session(
         guest_uid=uid,
         guest_prefs=guest_prefs,
@@ -668,6 +764,7 @@ async def _poll_for_match(uid: str, db: Session):
     )
 
     if session_id:
+        log.info(f"✓ Found compatible session: {session_id}")
         from controllers.session import _join_session_by_id
 
         session = _join_session_by_id(session_id=session_id, guest_uid=uid, db=db)
@@ -675,14 +772,19 @@ async def _poll_for_match(uid: str, db: Session):
 
         await _notify_users_of_session_found(session["host_uid"], session["id"], uid)
 
+        log.info(f"✓ Successfully joined user {uid} to session {session_id}")
         return {
             "status": "found",
             "role": "guest",
             "session": dict(session),
             "message": "Match found!",
         }
+    else:
+        log.info(f"✗ No compatible sessions found")
 
+    # STEP 4: Still searching, return status
     time_remaining = MATCHMAKING_TIMEOUT_SECONDS - time_elapsed
+    log.info(f"Still searching... {time_remaining:.1f}s remaining")
     return {
         "status": "searching",
         "message": "Still searching for a match...",
