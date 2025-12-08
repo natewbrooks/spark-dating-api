@@ -50,9 +50,12 @@ def _user_in_queue(uid: str, db: Session) -> bool:
 def _join_queue(uid: str, db: Session):
     """Add user to matchmaking queue with their current preferences."""
     if _user_in_queue(uid=uid, db=db):
-        raise HTTPException(status_code=409, detail=f"User with uid '{uid}' is already in the queue!")
-    
-    # Check if user is already in an active session
+        db.execute(
+            text("DELETE FROM sessions.matchmaking_queue WHERE uid = :uid"),
+            {"uid": uid},
+        )
+        
+    # Check if user is already1 in an active session
     from controllers.session import _user_in_session
     if _user_in_session(uid=uid, db=db):
         raise HTTPException(status_code=409, detail=f"User is already in an active session!")
