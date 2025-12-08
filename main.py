@@ -36,6 +36,7 @@ private_router.include_router(private_matchmaking_router)
 origins = [
     "http://localhost:5173",
     "http://localhost:8000",
+    "https://spark-dating-api.up.railway.app",
 ]
 
 
