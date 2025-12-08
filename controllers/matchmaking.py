@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 import json
 from datetime import datetime, timedelta, date
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 
 from controllers.preferences import _get_user_prefs
@@ -55,13 +55,30 @@ def _join_queue(uid: str, db: Session):
             {"uid": uid},
         )
         
-    # Check if user is already1 in an active session
+    # Check if user is already in an active session
     from controllers.session import _user_in_session
     if _user_in_session(uid=uid, db=db):
         raise HTTPException(status_code=409, detail=f"User is already in an active session!")
     
     # Get user's current preferences and profile
-    user_prefs = _get_user_prefs(uid=uid, db=db)
+    try:
+        user_prefs = _get_user_prefs(uid=uid, db=db)
+    except HTTPException as e:
+        # If user has no preferences set, use defaults (match with anyone)
+        if e.status_code == 404:
+            log = logging.getLogger("matchmaking")
+            log.info(f"User {uid} has no preferences set, using defaults (match with anyone)")
+            
+            user_prefs = {
+                "target_gender": "any",
+                "age_min": 18,
+                "age_max": 99,
+                "max_distance": 999999,  # Essentially unlimited
+                "extra_options": {}  # No filters
+            }
+        else:
+            raise
+    
     user_profile = _get_profile(uid=uid, db=db)
     
     stmt = text("""
@@ -254,30 +271,77 @@ def _has_recent_session(uid_a: str, uid_b: str, db: Session) -> bool:
     return row is not None
 
 
+def _normalize_value(val):
+    """Normalize a value to lowercase string for comparison."""
+    if val is None:
+        return None
+    return str(val).lower().strip()
+
+
+def _to_list(val):
+    """Convert value to list if it isn't already."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return [_normalize_value(v) for v in val]
+    return [_normalize_value(val)]
+
+
+def _check_preference_match(profile_value, preference_filter) -> bool:
+    """
+    Check if a profile value matches a preference filter.
+    
+    Args:
+        profile_value: The actual value from the user's profile (single value or list)
+        preference_filter: The preference filter (list of acceptable values)
+    
+    Returns:
+        True if there's at least one match, False otherwise
+    """
+    # If no preference filter set, accept anything
+    if not preference_filter:
+        return True
+    
+    # Convert both to lists for comparison
+    profile_values = _to_list(profile_value)
+    filter_values = _to_list(preference_filter)
+    
+    # If no profile values, fail
+    if not profile_values:
+        return False
+    
+    # Check if ANY profile value matches ANY filter value
+    for pval in profile_values:
+        if pval in filter_values:
+            return True
+    
+    return False
+
+
 def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profile: dict, guest_profile: dict) -> bool:
+    """
+    Enhanced compatibility check with extra_options preference filtering.
+    
+    Logic:
+    - Core preferences (gender, age, distance) must match (both ways)
+    - Extra options preferences: If a preference field has values, the other user's profile
+      must have AT LEAST ONE matching value in that field
+    """
     log = logging.getLogger("matchmaking")
     log.info("=== Checking compatibility ===")
 
-    log.info(f"Host prefs: {host_prefs}")
-    log.info(f"Guest prefs: {guest_prefs}")
-    log.info(f"Host profile: {host_profile}")
-    log.info(f"Guest profile: {guest_profile}")
-
-    # Extract host preferences
+    # ========== CORE PREFERENCES ==========
+    
+    # Extract core preferences
     host_age_min = host_prefs.get('age_min', 18)
     host_age_max = host_prefs.get('age_max', 99)
-    host_target_gender_id = host_prefs.get('target_gender_id')
     host_max_distance = host_prefs.get('max_distance', 999999)
-
-    # Extract guest preferences
+    
     guest_age_min = guest_prefs.get('age_min', 18)
     guest_age_max = guest_prefs.get('age_max', 99)
-    guest_target_gender_id = guest_prefs.get('target_gender_id')
     guest_max_distance = guest_prefs.get('max_distance', 999999)
 
     # Extract profile info
-    host_gender_id = host_profile.get('gender_id')
-    guest_gender_id = guest_profile.get('gender_id')
     host_dob = host_profile.get('birthdate')
     guest_dob = guest_profile.get('birthdate')
     host_location = host_profile.get('location')
@@ -287,31 +351,24 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
     host_age = _calculate_age_from_dob(host_dob) if host_dob else 0
     guest_age = _calculate_age_from_dob(guest_dob) if guest_dob else 0
 
-    log.info(f"Computed ages -> Host age: {host_age}, Guest age: {guest_age}")
+    log.info(f"Ages -> Host: {host_age}, Guest: {guest_age}")
 
     # Gender compatibility (both ways)
-    # Resolve gender names
-    host_gender_name = host_profile.get("gender_name")
-    guest_gender_name = guest_profile.get("gender_name")
+    host_gender_name = _normalize_value(host_profile.get("gender"))
+    guest_gender_name = _normalize_value(guest_profile.get("gender"))
+    host_target_name = _normalize_value(host_prefs.get("target_gender"))
+    guest_target_name = _normalize_value(guest_prefs.get("target_gender"))
 
-    # Resolve target preferences
-    host_target_name = host_prefs.get("target_gender_name")
-    guest_target_name = guest_prefs.get("target_gender_name")
-
-    # Treat "any" as wildcard
-    def accepts(target, actual):
-        if target is None:
-            return True
-        if target.lower() == "any":
+    def accepts_gender(target, actual):
+        if not target or target == "any":
             return True
         return target == actual
 
-    # Check both directions
-    if not accepts(host_target_name, guest_gender_name):
+    if not accepts_gender(host_target_name, guest_gender_name):
         log.info(f"Gender fail: host wants {host_target_name}, guest is {guest_gender_name}")
         return False
 
-    if not accepts(guest_target_name, host_gender_name):
+    if not accepts_gender(guest_target_name, host_gender_name):
         log.info(f"Gender fail: guest wants {guest_target_name}, host is {host_gender_name}")
         return False
 
@@ -330,25 +387,88 @@ def _are_preferences_compatible(host_prefs: dict, guest_prefs: dict, host_profil
     host_coords = _parse_location(host_location)
     guest_coords = _parse_location(guest_location)
 
-    log.info(f"Parsed host coords: {host_coords}, guest coords: {guest_coords}")
-
     if host_coords and guest_coords:
         host_lat, host_lon = host_coords
         guest_lat, guest_lon = guest_coords
 
         distance_miles = _calculate_distance_miles(host_lat, host_lon, guest_lat, guest_lon)
-        log.info(f"Distance between users: {distance_miles} miles")
+        log.info(f"Distance: {distance_miles:.1f} miles")
 
         if distance_miles > host_max_distance:
-            log.info(f"Distance fail: {distance_miles} > host max {host_max_distance}")
+            log.info(f"Distance fail: {distance_miles:.1f} > host max {host_max_distance}")
             return False
 
         if distance_miles > guest_max_distance:
-            log.info(f"Distance fail: {distance_miles} > guest max {guest_max_distance}")
+            log.info(f"Distance fail: {distance_miles:.1f} > guest max {guest_max_distance}")
             return False
 
-    log.info("Users ARE compatible!")
+    # ========== EXTRA OPTIONS PREFERENCES ==========
+    
+    host_extra = host_prefs.get('extra_options', {}) or {}
+    guest_extra = guest_prefs.get('extra_options', {}) or {}
+    
+    # Define preference fields to check
+    # Format: (preference_key, profile_key)
+    preference_fields = [
+        ('relationship_goal', 'relationship_goal'),
+        ('personality_type', 'personality_type'),
+        ('love_language', 'love_language'),
+        ('attachment_style', 'attachment_style'),
+        ('political_view', 'political_view'),
+        ('zodiac_sign', 'zodiac_sign'),
+        ('religion', 'religion'),
+        ('diet', 'diet'),
+        ('exercise_frequency', 'exercise_frequency'),
+        ('smoke_frequency', 'smoke_frequency'),
+        ('drink_frequency', 'drink_frequency'),
+        ('sleep_schedule', 'sleep_schedule'),
+        ('weed_use', 'weed_use'),
+        ('drug_use', 'drug_use'),
+        ('interests', 'interests'),
+        ('languages_spoken', 'languages_spoken'),
+        ('pets', 'pets'),
+        ('school', 'school'),
+    ]
+    
+    # Check HOST preferences against GUEST profile
+    for pref_key, profile_key in preference_fields:
+        host_pref_filter = host_extra.get(pref_key)
+        
+        # Skip if host has no preference for this field
+        if not host_pref_filter:
+            continue
+        
+        # Skip if it's an empty list
+        if isinstance(host_pref_filter, list) and len(host_pref_filter) == 0:
+            continue
+        
+        guest_profile_value = guest_profile.get(profile_key)
+        
+        if not _check_preference_match(guest_profile_value, host_pref_filter):
+            log.info(f"Preference fail: host wants {pref_key}={host_pref_filter}, guest has {profile_key}={guest_profile_value}")
+            return False
+    
+    # Check GUEST preferences against HOST profile
+    for pref_key, profile_key in preference_fields:
+        guest_pref_filter = guest_extra.get(pref_key)
+        
+        # Skip if guest has no preference for this field
+        if not guest_pref_filter:
+            continue
+        
+        # Skip if it's an empty list
+        if isinstance(guest_pref_filter, list) and len(guest_pref_filter) == 0:
+            continue
+        
+        host_profile_value = host_profile.get(profile_key)
+        
+        if not _check_preference_match(host_profile_value, guest_pref_filter):
+            log.info(f"Preference fail: guest wants {pref_key}={guest_pref_filter}, host has {profile_key}={host_profile_value}")
+            return False
+
+    log.info("✓ Users ARE compatible!")
     return True
+
 
 def _find_compatible_queue_peer(guest_uid: str, guest_prefs: dict, guest_profile: dict, db: Session) -> Optional[str]:
     """
@@ -437,11 +557,11 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
             continue
     
         host_prefs = row["host_prefs"]
-        host_profile = {
-            "birthdate": row["host_birthdate"],
-            "gender_id": row["host_gender_id"],
-            "location": row["host_location"],
-        }
+        
+        # Get full host profile for preference matching
+        host_profile = _get_profile(uid=host_uid, db=db)
+        if not host_profile:
+            continue
 
         if _are_preferences_compatible(host_prefs, guest_prefs, host_profile, guest_profile):
             return row["id"]
@@ -642,8 +762,8 @@ async def _notify_users_of_session_found(host_uid: str, session_id: str, guest_u
         return
 
     notifications = [
-        (host_uid, guest_uid),  # User 1 receives notification about User 2
-        (guest_uid, host_uid)   # User 2 receives notification about User 1
+        (host_uid, guest_uid),
+        (guest_uid, host_uid)
     ]
     
     for recipient_uid, partner_uid in notifications:
@@ -669,7 +789,6 @@ async def _notify_users_of_session_found(host_uid: str, session_id: str, guest_u
             log.info(f"Match notification sent to {recipient_uid_str} (partner: {partner_uid_str}) for session {session_id}.")
 
         except Exception as e:
-            # Catch errors for this specific user without stopping the whole process
             log.error(f"Failed to send WebSocket notification to {recipient_uid_str}: {e}")
 
 async def _match_user(uid: str, db: Session):
@@ -797,17 +916,13 @@ async def _match_user(uid: str, db: Session):
         "system": bool(session_message_row["is_system"]),
     }
 
-    # Send WebSocket notifications to both users using the working pattern
+    # Send WebSocket notifications to both users
     from services.sockets import user_sid_map, socket_manager
     
-    
     if socket_manager is not None:
-        from services.sockets import user_sid_map
-        
-        # Prepare notifications for both users
         notifications = [
-            (uid, other_uid), # Sender receives confirmation
-            (other_uid, uid) # Recipient receives notification
+            (uid, other_uid),
+            (other_uid, uid)
         ]
         
         for recipient_uid, from_uid in notifications:
@@ -820,7 +935,6 @@ async def _match_user(uid: str, db: Session):
                     log.info(f"User {recipient_uid_str} not connected, skipping match notification.")
                     continue
 
-                # Send chat_received event
                 await socket_manager.emit(
                     "chat_received",
                     msg_payload,
@@ -828,7 +942,6 @@ async def _match_user(uid: str, db: Session):
                 )
                 log.info(f"Match chat notification sent to {recipient_uid_str} for session {session_id}.")
 
-                # Send match_interaction event to notify about the match action
                 await socket_manager.emit(
                     "match_interaction",
                     {
@@ -836,7 +949,7 @@ async def _match_user(uid: str, db: Session):
                         "to_uid": recipient_uid_str,
                         "session_id": str(session_id),
                         "is_mutual": is_mutual,
-                        "message": f"{display_name} is interested!" if from_uid_str == str(uid) else f"{display_name} is interested!",
+                        "message": f"{display_name} is interested!",
                     },
                     room=recipient_sid,
                 )
@@ -918,8 +1031,6 @@ async def _match_user(uid: str, db: Session):
 def _get_match_status(uid: str, db: Session):
     """
     Get the match status for the current user in their active session.
-    Returns whether the current user has matched, whether the other user has matched,
-    and whether it's mutual.
     """
     from controllers.session import _get_active_session
     
@@ -940,7 +1051,6 @@ def _get_match_status(uid: str, db: Session):
         raise HTTPException(status_code=400, detail="User is not part of this session")
 
     if not other_uid:
-        # No partner yet, so no matches
         return {
             "you_matched": False,
             "they_matched": False,
@@ -949,7 +1059,6 @@ def _get_match_status(uid: str, db: Session):
 
     session_id = session_dict["id"]
 
-    # Check if current user has matched the other user
     you_matched = db.execute(
         text(
             """
@@ -970,7 +1079,6 @@ def _get_match_status(uid: str, db: Session):
         },
     ).mappings().first()
 
-    # Check if other user has matched the current user
     they_matched = db.execute(
         text(
             """
