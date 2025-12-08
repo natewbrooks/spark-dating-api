@@ -37,6 +37,7 @@ origins = [
     "http://localhost:5173",
     "http://localhost:8000",
     "https://spark-dating-api.up.railway.app",
+    "https://spark-app-livid.vercel.app"
 ]
 
 
