@@ -27,19 +27,19 @@ DATABASE_URL = f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{DBNAME}?
 # Increased pool size to match Supabase backend capacity
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True, # Verify connections before using them
-    pool_size=20, # Increased from default 5 to 20
-    max_overflow=10, # Additional connections beyond pool_size
-    pool_recycle=3600, # Recycle connections after 1 hour
-    pool_timeout=30, # Wait up to 30 seconds for a connection
+    pool_pre_ping=True,
+    pool_size=3,
+    max_overflow=3,
+    pool_recycle=1800,
+    pool_timeout=30,
     connect_args={
-        "connect_timeout": 10, # TCP connection timeout
-        "keepalives": 1, # Enable TCP keepalives
-        "keepalives_idle": 30, # Seconds before sending keepalive
-        "keepalives_interval": 10, # Seconds between keepalives
-        "keepalives_count": 5, # Number of lost keepalives before disconnect
+        "connect_timeout": 10,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
     },
-    future=True
+    future=True,
 )
 
 # Session generator
