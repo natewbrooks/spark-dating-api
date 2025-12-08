@@ -7,7 +7,6 @@ from fastapi import HTTPException
 """
 THE PURPOSE OF THIS FILE IS TO CREATE A REUSABLE SINGLETON SESSION WITH THE SUPABASE DATABASE
 IT IS USED IN ALL DATABASE DEPENDENT API ENDPOINTS VIA THE PARAM 'def foo(db: Session = Depends(get_db))'
-
 IT HAS A VERBOSE SAFETY ROLLBACK ALTHOUGH THIS IS REDUNDANT BECAUSE WHEN USING THE DATABASE YOU SHOULD
 USE 'with db.begin():' WHICH AUTOMATICALLY COMMITS IF NO EXCEPTIONS / ROLLBACK IF THERE ARE EXCEPTIONS
 """
@@ -25,7 +24,23 @@ if not all([USER, PASSWORD, HOST, PORT, DBNAME]):
 DATABASE_URL = f"postgresql+psycopg2://{USER}:{PASSWORD}@{HOST}:{PORT}/{DBNAME}?sslmode=require"
 
 # An Engine, which the Session will use for connection
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+# Increased pool size to match Supabase backend capacity
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True, # Verify connections before using them
+    pool_size=20, # Increased from default 5 to 20
+    max_overflow=10, # Additional connections beyond pool_size
+    pool_recycle=3600, # Recycle connections after 1 hour
+    pool_timeout=30, # Wait up to 30 seconds for a connection
+    connect_args={
+        "connect_timeout": 10, # TCP connection timeout
+        "keepalives": 1, # Enable TCP keepalives
+        "keepalives_idle": 30, # Seconds before sending keepalive
+        "keepalives_interval": 10, # Seconds between keepalives
+        "keepalives_count": 5, # Number of lost keepalives before disconnect
+    },
+    future=True
+)
 
 # Session generator
 # https://docs.sqlalchemy.org/en/20/orm/session_basics.html
@@ -34,8 +49,10 @@ As such it also has its own sessionmaker.begin() method, analogous to Engine.beg
 and also maintains a begin/commit/rollback block"""
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+
 # FastAPI dependency with verbose safety rollback and close if it fails
 def get_db():
+    db = None
     try:
         db = SessionLocal()
     except OperationalError as e:
@@ -46,9 +63,20 @@ def get_db():
                 status_code=503,
                 detail="Database connection limit reached, please try again shortly.",
             )
+        # Detect SSL connection errors
+        if "SSL connection has been closed unexpectedly" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Database connection error, please try again.",
+            )
         raise
+    
     try:
         yield db
         db.commit()
+    except Exception as e:
+        db.rollback()
+        raise
     finally:
-        db.close()
+        if db:
+            db.close()
