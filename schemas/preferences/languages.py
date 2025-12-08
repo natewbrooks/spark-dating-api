@@ -1,0 +1,32 @@
+from enum import Enum
+
+class LanguageEnum(str, Enum):
+    """
+    Enum representing languages a user speaks, corresponding to values
+    inserted into the public.languages lookup table.
+    """
+    english = "english"
+    spanish = "spanish"
+    mandarin = "mandarin"
+    hindi = "hindi"
+    arabic = "arabic"
+    french = "french"
+    russian = "russian"
+    portuguese = "portuguese"
+    bengali = "bengali"
+    german = "german"
+    japanese = "japanese"
+    korean = "korean"
+    italian = "italian"
+    turkish = "turkish"
+    vietnamese = "vietnamese"
+    polish = "polish"
+    dutch = "dutch"
+    thai = "thai"
+    greek = "greek"
+    swedish = "swedish"
+    norwegian = "norwegian"
+    finnish = "finnish"
+    hebrew = "hebrew"
+    indonesian = "indonesian"
+    tagalog = "tagalog"

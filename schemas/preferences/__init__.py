@@ -20,26 +20,31 @@ from .drink_frequency import DrinkFrequencyEnum
 from .smoke_frequency import SmokeFrequencyEnum
 from .sleep_schedule import SleepScheduleEnum
 from .zodiac_signs import ZodiacSignsEnum 
+from .languages import LanguageEnum
 
 # Mirror the settings in profiles.profiles table
 class ExtraPreferenceOptionsSchema(BaseModel):
     school: Optional[str] = None
-    drug_use: Optional[bool] = None
-    weed_use: Optional[bool] = None
-    relationship_goal: Optional[RelationshipGoalsEnum] = None
+    drug_use: Optional[List[SmokeFrequencyEnum]] = None
+    weed_use: Optional[List[SmokeFrequencyEnum]] = None
+
+    relationship_goal: Optional[List[RelationshipGoalsEnum]] = None
     interests: Optional[List[InterestsEnum]] = None
-    personality_type: Optional[PersonalityTypeEnum] = None
-    love_language: Optional[LoveLanguageEnum] = None
-    attachment_style: Optional[AttachmentStyleEnum] = None
-    political_view: Optional[PoliticalViewsEnum] = None
-    zodiac_sign: Optional[ZodiacSignsEnum] = None
-    religion: Optional[ReligionEnum]
-    diet: Optional[DietEnum] = None
-    exercise_frequency: Optional[ExerciseFrequencyEnum] = None
+    personality_type: Optional[List[PersonalityTypeEnum]] = None
+    love_language: Optional[List[LoveLanguageEnum]] = None
+    languages_spoken: Optional[List[LanguageEnum]] = None
+
+    attachment_style: Optional[List[AttachmentStyleEnum]] = None
+    political_view: Optional[List[PoliticalViewsEnum]] = None
+    zodiac_sign: Optional[List[ZodiacSignsEnum]] = None
+    religion: Optional[List[ReligionEnum]] = None
+    diet: Optional[List[DietEnum]] = None
+
+    exercise_frequency: Optional[List[ExerciseFrequencyEnum]] = None
     pets: Optional[List[PetsEnum]] = None
-    smoke_frequency: Optional[SmokeFrequencyEnum] = None
-    drink_frequency: Optional[DrinkFrequencyEnum] = None
-    sleep_schedule: Optional[SleepScheduleEnum] = None
+    smoke_frequency: Optional[List[SmokeFrequencyEnum]] = None
+    drink_frequency: Optional[List[DrinkFrequencyEnum]] = None
+    sleep_schedule: Optional[List[SleepScheduleEnum]] = None
 
 
 class UserProfilePreferencesSchema(BaseModel):

@@ -7,7 +7,7 @@ from middleware.auth import auth_user
 from typing import Annotated
 from controllers.profile import _profile_exists
 
-from schemas.preferences.orientation import SexualOrientationsEnum 
+from schemas.preferences.sexual_orientation import SexualOrientationsEnum 
 from controllers.orientation import _get_profile_orientation, _get_all_orientation_options, _orientation_name_to_id, _update_profile_orientation
 
 router = APIRouter(tags=["Profile: Orientation"])

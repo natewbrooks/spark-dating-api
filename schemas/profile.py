@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 # Enums
 from .preferences.genders import GendersEnum
-from .preferences.orientation import SexualOrientationsEnum, UpdateSexualOrientationSchema
+from .preferences.sexual_orientation import SexualOrientationsEnum, UpdateSexualOrientationSchema
 from .preferences.interests import InterestsEnum 
 from .preferences.pronouns import PronounsEnum
 from .preferences.relationship_goals import RelationshipGoalsEnum
@@ -24,18 +24,20 @@ from .preferences.drink_frequency import DrinkFrequencyEnum
 from .preferences.smoke_frequency import SmokeFrequencyEnum
 from .preferences.sleep_schedule import SleepScheduleEnum
 from .preferences.zodiac_signs import ZodiacSignsEnum 
+from .preferences.languages import LanguageEnum
+
 
 class UserProfileSchema(BaseModel):
     created_at: Optional[datetime] = None
 
     bio: Optional[str] = Field(default=None, max_length=1000)
-    drug_use: Optional[bool] = None
-    weed_use: Optional[bool] = None
+    drug_use: Optional[SmokeFrequencyEnum] = None
+    weed_use: Optional[SmokeFrequencyEnum] = None
 
     # These two will need to be converted to their fk UUID by the backend
     gender: Optional[GendersEnum] = None
     orientation: Optional[SexualOrientationsEnum] = None
-    interests: List[InterestsEnum] = None
+    interests: Optional[List[InterestsEnum]] = None
     # # # (e.g. SELECT id FROM public.genders WHERE name = :gender) # # #
 
     location: Optional[str] = Field(default=None, max_length=255)
@@ -44,7 +46,7 @@ class UserProfileSchema(BaseModel):
 
     pronouns: Optional[PronounsEnum] = None
 
-    languages_spoken: Optional[List[str]] = None
+    languages_spoken: Optional[List[LanguageEnum]] = None
 
     school: Optional[str] = Field(default=None, max_length=255)
     occupation: Optional[str] = Field(default=None, max_length=255)
