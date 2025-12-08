@@ -35,7 +35,6 @@ def get_user_photos(
     ttl_seconds: int = 500,
     only_approved: bool = False,
 ):
-    # Build WHERE clause
     where = ["uid = :uid"]
     params = {"uid": uid}
     if only_approved:
@@ -47,42 +46,39 @@ def get_user_photos(
         WHERE {' AND '.join(where)}
         ORDER BY is_primary DESC, created_at DESC
     """)
-    rows = db.execute(stmt, {"uid": uid}).mappings().all()
+    rows = db.execute(stmt, params).mappings().all()
     if not rows:
         return []
 
     bucket = storage.from_(BUCKET)
-    paths = [r["path"] for r in rows]
+    items: list[PhotoMetaSchema] = []
 
-    signed_resp = bucket.create_signed_urls(paths, ttl_seconds)
+    for row in rows:
+        try:
+            signed = bucket.create_signed_url(row["path"], ttl_seconds) or {}
+        except Exception:
+            continue
 
-    if isinstance(signed_resp, dict):
-        data = signed_resp.get("data") or []
-    elif isinstance(signed_resp, list):
-        data = signed_resp
-    else:
-        data = []
+        url = signed.get("signedUrl") or signed.get("signedURL")
+        if not url:
+            continue
 
-    # Handle signedUrl vs signedURL keys
-    url_map = {
-        d.get("path"): (d.get("signedUrl") or d.get("signedURL"))
-        for d in data if d.get("path")
-    }
-
-    return [
-        PhotoMetaSchema(
-            id = row["id"],
-            mime_type = row.get("mime_type"),
-            size_bytes = row.get("size_bytes"),
-            url = url_map.get(row["path"]),
-            path = row["path"],
-            metadata=PhotoMetadataSchema(
-                slot = row.get("slot"),
-                is_primary = row["is_primary"],
-                moderation_status = row["moderation_status"],
+        items.append(
+            PhotoMetaSchema(
+                id=row["id"],
+                mime_type=row.get("mime_type"),
+                size_bytes=row.get("size_bytes"),
+                url=url,
+                path=row["path"],
+                metadata=PhotoMetadataSchema(
+                    slot=row.get("slot"),
+                    is_primary=row["is_primary"],
+                    moderation_status=row["moderation_status"],
+                ),
             )
-        ) for row in rows
-    ]
+        )
+
+    return items
 
 def upload_profile_photo(
     uid: str,
