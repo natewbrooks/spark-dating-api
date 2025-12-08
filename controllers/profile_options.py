@@ -202,7 +202,6 @@ def _update_single_value(uid: str, db: Session, lookup_table: str, column_name: 
             WHERE uid = :uid
         """)
         db.execute(stmt, {"option_id": option_id, "uid": uid})
-        db.commit()
         return {"ok": True, column_name.replace('_id', ''): option_name}
     
     elif storage_type == 'PREF_FK':
@@ -216,7 +215,6 @@ def _update_single_value(uid: str, db: Session, lookup_table: str, column_name: 
             WHERE uid = :uid
         """)
         db.execute(stmt, {"option_id": option_id, "uid": uid})
-        db.commit()
         return {"ok": True, column_name.replace('_id', ''): option_name}
     
     raise HTTPException(status_code=500, detail="Update logic missing for storage type.")
@@ -244,8 +242,6 @@ def _update_multi_value(uid: str, db: Session, lookup_table: str, junction_table
             VALUES (:uid, :option_id)
         """)
         db.execute(stmt, {"uid": uid, "option_id": option_id})
-    
-    db.commit()
     return {"ok": True, "count": len(option_ids)}
 
 
@@ -267,7 +263,6 @@ def _delete_single_value(uid: str, db: Session, column_name: str, storage_type: 
             WHERE uid = :uid
         """)
         db.execute(stmt, {"uid": uid})
-        db.commit()
         return {"ok": True, "message": f"Cleared {column_name.replace('_id', '')}."}
     
     elif storage_type == 'PREF_FK':
@@ -285,7 +280,6 @@ def _delete_single_value(uid: str, db: Session, column_name: str, storage_type: 
             WHERE uid = :uid
         """)
         db.execute(stmt, {"default_id": default_gender_id, "uid": uid})
-        db.commit()
         return {"ok": True, "message": "Reset target_gender to 'any'."}
     
     raise HTTPException(status_code=500, detail="Delete logic missing for storage type.")
@@ -302,7 +296,6 @@ def _delete_multi_value(uid: str, db: Session, junction_table: str) -> dict:
         WHERE uid = :uid
     """)
     db.execute(stmt, {"uid": uid})
-    db.commit()
     
     return {"ok": True, "message": f"Cleared all {junction_table}."}
 
@@ -326,7 +319,6 @@ def _ensure_preferences_row(uid: str, db: Session):
         ON CONFLICT (uid) DO NOTHING;
     """)
     db.execute(stmt, {"uid": uid, "default_gender_id": default_gender_id})
-    db.commit()
 
 
 # ----------------------------------------------------------------------

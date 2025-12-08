@@ -249,7 +249,6 @@ def _create_profile(uid: str, payload: Dict[str, Any], db: Session) -> Dict[str,
         if payload.get("languages_spoken"):
             _update_junction_table(uid, "languages_spoken", "language_id", payload["languages_spoken"], "languages", db)
         
-        db.commit()
         return {"ok": True, "detail": f"Profile for user '{uid}' created."}
     
     except SQLAlchemyError as e:

@@ -99,7 +99,6 @@ def _create_user_prefs(payload: UserProfilePreferencesSchema, uid: str, db: Sess
         "extra_options": dumps(extra_options) if extra_options else None
     })
     
-    db.commit()
     return {"ok": True}
 
 
@@ -160,5 +159,4 @@ def _update_user_prefs(payload: UserProfilePreferencesSchema, uid: str, db: Sess
         print(f"ERROR updating preferences: {e}")
         raise
 
-    db.commit()
     return {"ok": True}
