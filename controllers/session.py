@@ -133,6 +133,7 @@ def _join_session_by_id(session_id: str, guest_uid: str, db: Session):
     
     return res
 
+
 def _create_session_from_queue(
     host_uid: str, 
     mode_id: Optional[str], 
@@ -160,6 +161,8 @@ def _create_session_from_queue(
     
     # Keep user in queue so their session can be found by others
     # They'll be removed from queue when someone joins
+    
+    _leave_queue(uid=host_uid, db=db)
     
     return res
 

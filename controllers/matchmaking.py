@@ -636,23 +636,144 @@ def _find_compatible_session(guest_uid: str, guest_prefs: dict, guest_profile: d
     log.info(f"  ❌ No compatible sessions found")
     return None
 
-async def _poll_for_match(uid: str, db: Session):
-    from controllers.session import _get_active_session
-    log = logging.getLogger("matchmaking")
+def _get_user_first_name(uid: str, db: Session) -> Optional[str]:
+    """Helper to fetch a user's first name."""
+    user_row = db.execute(
+        text("SELECT first_name FROM users.users WHERE id = :id LIMIT 1"),
+        {"id": uid},
+    ).mappings().first()
+    return user_row["first_name"] if user_row else None
+
+
+def _find_open_session(db: Session, uid: str, mode_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Finds an active session where guest_uid is NULL, created by a compatible host.
+    Uses only mode_id and user exclusion for simplicity, as provided in the prompt's logic.
+    """
+    sql = text("""
+        SELECT
+            s.id AS session_id,
+            s.host_uid,
+            s.mode_id,
+            u.first_name AS host_first_name
+        FROM sessions.sessions s
+        JOIN users.users u ON s.host_uid = u.id
+        WHERE
+            s.guest_uid IS NULL
+            AND s.mode_id = :mode_id
+            AND s.host_uid != :uid
+        LIMIT 1
+    """)
+
+    result = db.execute(sql, {"mode_id": mode_id, "uid": uid}).mappings().first()
+
+    if result:
+        return {
+            "session_id": str(result["session_id"]),
+            "host_uid": str(result["host_uid"]),
+            "host_first_name": result["host_first_name"]
+        }
+    return None
+
+def _get_active_session_by_host(host_uid: str, db: Session) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves an active session where the given UID is the host, and the session 
+    has not been ended (closed_at IS NULL).
+    """
+    log = logging.getLogger("matchmaking") 
+    log.info(f"Checking for active session hosted by {host_uid}.")
     
+    stmt = text("""
+        SELECT *
+        FROM sessions.sessions
+        WHERE host_uid = :host_uid
+        AND closed_at IS NULL
+        LIMIT 1
+    """)
+    
+    session_data = db.execute(stmt, {"host_uid": host_uid}).mappings().first()
+    
+    if session_data:
+        # Convert to a dictionary for consistent return type
+        return dict(session_data)
+        
+    return None
+
+def _create_session_from_timeout(
+    host_uid: str, 
+    mode_id: str, 
+    prefs_snapshot: Dict[str, Any], 
+    db: Session
+) -> Dict[str, Any]:
+    """
+    Creates a new session for a user who timed out in the queue, making them the host.
+    The user is immediately removed from the queue.
+    """
+    session_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    
+    # 1. Create the new session
+    stmt = text("""
+        INSERT INTO sessions.sessions (
+            id, host_uid, mode_id, host_prefs_snapshot, status
+        )
+        VALUES (
+            :id, :host_uid, :mode_id, :host_prefs_snapshot, 'waiting_for_guest'
+        )
+        RETURNING *;
+    """)
+    
+    result = db.execute(
+        stmt,
+        {
+            "id": session_id,
+            "host_uid": host_uid,
+            "mode_id": mode_id,
+            "host_prefs_snapshot": json.dumps(prefs_snapshot), # Store as JSON
+        },
+    ).mappings().first()
+    
+    if not result:
+        # This should theoretically not happen with RETURNING *, but good practice
+        raise Exception("Failed to create session on timeout.")
+
+    # 2. Remove the user from the matchmaking queue
+    _leave_queue(uid=host_uid, db=db)
+    
+    # 3. Return the created session data
+    return dict(result)
+
+# --- MAIN POLL FUNCTION (Corrected Sequential Logic) ---
+
+async def _poll_for_match(uid: str, db: Session) -> Dict[str, Any]:
+    from controllers.session import _get_active_session, _join_session_by_id, _create_session_from_queue, _get_active_session_by_id
+    log = logging.getLogger("matchmaking") 
     log.info(f"=== POLL FOR MATCH: User {uid} ===")
     
-    # Check if user already has a session
-    session = _get_active_session(uid=uid, db=db)
+    # 0. Check if user already has a session
+    # Assuming _get_active_session returns a session object/dict or None
+    session = _get_active_session(uid=uid, db=db) 
     if session:
         log.info(f"User {uid} already has an active session")
         session_dict = dict(session)
 
-        host_uid = str(session_dict.get("host_uid")) if session_dict.get("host_uid") else None
-        guest_uid = str(session_dict.get("guest_uid")) if session_dict.get("guest_uid") else None
+        host_uid = str(session_dict.get("host_uid"))
+        guest_uid = str(session_dict.get("guest_uid"))
         current_uid = str(uid)
 
-        role = "guest" if guest_uid == current_uid else "host"
+        # Determine role and partner info for early return
+        if current_uid == guest_uid:
+            role = "guest"
+            partner_uid = host_uid
+        else:
+            role = "host"
+            partner_uid = guest_uid
+        
+        partner_name = _get_user_first_name(partner_uid, db) if partner_uid else "Partner"
+
+        session_dict["other_user_uid"] = partner_uid
+        session_dict["other_user_first_name"] = partner_name
+
         if _user_in_queue(uid=uid, db=db):
             log.info(f"Removing user {uid} from queue (already in session)")
             _leave_queue(uid=uid, db=db)
@@ -664,7 +785,7 @@ async def _poll_for_match(uid: str, db: Session):
             "message": "Match found!",
         }
 
-    # Check if user is in queue
+    # Check if user is in queue (must be here for all subsequent steps)
     if not _user_in_queue(uid=uid, db=db):
         log.info(f"User {uid} not in queue and not in session")
         return {
@@ -674,38 +795,35 @@ async def _poll_for_match(uid: str, db: Session):
 
     # Get queue entry and calculate time elapsed
     queue_entry = _get_queue(uid=uid, db=db)
-    enqueued_at = queue_entry["enqueued_at"]
-    time_elapsed = (datetime.utcnow() - enqueued_at).total_seconds()
-    
+    time_elapsed = (datetime.utcnow() - queue_entry.enqueued_at).total_seconds()
     log.info(f"User {uid} has been in queue for {time_elapsed:.1f} seconds")
-
-    # Get user's preferences and profile
-    guest_prefs = queue_entry["prefs_snapshot"]
-    guest_profile = _get_profile(uid=uid, db=db)
+    mode_id = queue_entry["mode_id"]
+    prefs_snapshot = queue_entry["prefs_snapshot"]
+    # time_elapsed = queue_entry["time_elapsed"]
     
-    log.info(f"User {uid} preferences: target_gender={guest_prefs.get('target_gender')}, age_range=[{guest_prefs.get('age_min')}-{guest_prefs.get('age_max')}], max_distance={guest_prefs.get('max_distance')}")
-    log.info(f"User {uid} profile: gender={guest_profile.get('gender')}, age={_calculate_age_from_dob(guest_profile.get('birthdate'))}")
-
-    # STEP 1: Try to find a compatible peer in the queue
+    # log.info(f"User {uid} has been in queue for {time_elapsed:.1f} seconds")
+    
+    # --- STEP 1: Try to find a compatible peer in the queue (Creates NEW session) ---
     log.info(f"STEP 1: Searching for compatible peer in queue...")
+    # Assuming _find_compatible_queue_peer handles all preference/compatibility checks
     peer_uid = _find_compatible_queue_peer(
         guest_uid=uid,
-        guest_prefs=guest_prefs,
-        guest_profile=guest_profile,
+        guest_prefs=prefs_snapshot,
+        guest_profile=_get_profile(uid=uid, db=db), # Assuming _get_profile is available
         db=db,
     )
 
     if peer_uid:
         log.info(f"✓ Found compatible peer in queue: {peer_uid}")
-        from controllers.session import _create_session_from_queue, _join_session_by_id
-
+        
         host_uid = peer_uid
         host_queue = _get_queue(uid=host_uid, db=db)
         host_mode_id = host_queue.get("mode_id")
         host_prefs_snapshot = host_queue["prefs_snapshot"]
 
         log.info(f"Creating session with host={host_uid}, guest={uid}")
-        session = _create_session_from_queue(
+        # Assuming _create_session_from_queue is available
+        session = _create_session_from_queue( 
             host_uid=host_uid,
             mode_id=host_mode_id,
             prefs_snapshot=host_prefs_snapshot,
@@ -714,12 +832,16 @@ async def _poll_for_match(uid: str, db: Session):
         session_dict = dict(session)
 
         _join_session_by_id(session_id=session_dict["id"], guest_uid=uid, db=db)
-
         _leave_queue(uid=uid, db=db)
         _leave_queue(uid=host_uid, db=db)
 
         await _notify_users_of_session_found(host_uid=host_uid, session_id=session_dict["id"], guest_uid=uid)
 
+        # Enrich session data for the polling user (Guest)
+        partner_name = _get_user_first_name(host_uid, db)
+        session_dict["other_user_uid"] = host_uid
+        session_dict["other_user_first_name"] = partner_name
+        
         log.info(f"✓ Successfully matched {uid} with {peer_uid} from queue")
         return {
             "status": "found",
@@ -730,59 +852,79 @@ async def _poll_for_match(uid: str, db: Session):
     else:
         log.info(f"✗ No compatible peers found in queue")
 
-    # STEP 2: Check if timeout reached - if so, create own session
-    if time_elapsed >= MATCHMAKING_TIMEOUT_SECONDS:
-        log.info(f"STEP 2: Timeout reached ({time_elapsed:.1f}s >= {MATCHMAKING_TIMEOUT_SECONDS}s)")
-        mode_id = queue_entry.get("mode_id")
-        prefs_snapshot = queue_entry["prefs_snapshot"]
+    # --- STEP 2: Try to find a compatible existing session to join (Joins EXISTING session) ---
+    log.info(f"STEP 2: Searching for compatible existing open sessions...")
+    # Using the simpler mode_id check from the user's provided _find_open_session definition
+    open_session_info = _find_open_session(db, uid, mode_id)
 
-        from controllers.session import _create_session_from_queue
+    if open_session_info:
+        log.info(f"✓ Found compatible session: {open_session_info['session_id']}")
+        
+        session_id = open_session_info["session_id"]
+        host_uid = open_session_info["host_uid"]
+        host_first_name = open_session_info["host_first_name"]
 
-        log.info(f"Creating session as host for user {uid}")
-        session = _create_session_from_queue(
-            host_uid=uid,
-            mode_id=mode_id,
-            prefs_snapshot=prefs_snapshot,
-            db=db,
-        )
-
-        log.info(f"✓ Created session {session['id']} with user {uid} as host, waiting for guest...")
-        return {
-            "status": "timeout",
-            "role": "host",
-            "session": dict(session),
-            "message": "No matches found. Created session as host. Waiting for a compatible user...",
-        }
-
-    # STEP 3: Try to find a compatible existing session to join
-    log.info(f"STEP 3: Searching for compatible existing sessions...")
-    session_id = _find_compatible_session(
-        guest_uid=uid,
-        guest_prefs=guest_prefs,
-        guest_profile=guest_profile,
-        db=db,
-    )
-
-    if session_id:
-        log.info(f"✓ Found compatible session: {session_id}")
-        from controllers.session import _join_session_by_id
-
+        # Assuming _join_session_by_id returns the updated session dict/object
         session = _join_session_by_id(session_id=session_id, guest_uid=uid, db=db)
         _leave_queue(uid=uid, db=db)
 
-        await _notify_users_of_session_found(session["host_uid"], session["id"], uid)
+        # Notify BOTH host and guest that they're now matched
+        await _notify_users_of_session_found(host_uid=host_uid, session_id=session_id, guest_uid=uid)
 
         log.info(f"✓ Successfully joined user {uid} to session {session_id}")
+        
+        # Construct session data to return to the polling user (the Guest)
+        session_dict = dict(session)
+        session_dict["other_user_uid"] = host_uid
+        session_dict["other_user_first_name"] = host_first_name
+
         return {
             "status": "found",
             "role": "guest",
-            "session": dict(session),
+            "session": session_dict,
             "message": "Match found!",
         }
     else:
-        log.info(f"✗ No compatible sessions found")
+        log.info(f"✗ No compatible open sessions found")
 
-    # STEP 4: Still searching, return status
+
+    # --- STEP 3: Check if timeout reached - if so, create own session (Becomes HOST) ---
+    if time_elapsed >= MATCHMAKING_TIMEOUT_SECONDS:
+        log.info(f"STEP 3: Timeout reached ({time_elapsed:.1f}s >= {MATCHMAKING_TIMEOUT_SECONDS}s)")
+        
+        # Check if a session was created previously and is still open (e.g., failed to leave queue previously)
+        if not _get_active_session_by_host(host_uid=uid, db=db):
+            
+            log.info(f"Creating session as host for user {uid}")
+            # Assuming _create_session_from_timeout is available
+            session = _create_session_from_queue(
+                host_uid=uid,
+                mode_id=mode_id,
+                prefs_snapshot=prefs_snapshot,
+                db=db
+            )
+
+            log.info(f"✓ Created session {session['id']} with user {uid} as host, waiting for guest...")
+            return {
+                "status": "timeout",
+                "role": "host",
+                "session": dict(session),
+                "message": "No matches found. Created session as host. Waiting for a compatible user...",
+            }
+        else:
+            # Session already exists (user polled after creating session, before guest joined)
+            session = _get_active_session_by_host(host_uid=uid, db=db)
+            log.info(f"Session already exists ({session['id']}) for host {uid}. Returning timeout status.")
+            return {
+                "status": "timeout",
+                "role": "host",
+                "session": dict(session),
+                "message": "Session created, waiting for partner.",
+                "time_elapsed": int(time_elapsed),
+                "time_remaining": 0,
+            }
+
+    # --- STEP 4: Still searching, return status ---
     time_remaining = MATCHMAKING_TIMEOUT_SECONDS - time_elapsed
     log.info(f"Still searching... {time_remaining:.1f}s remaining")
     return {
@@ -858,40 +1000,75 @@ def _get_matchmaking_state(uid: str, db: Session) -> dict:
 async def _notify_users_of_session_found(host_uid: str, session_id: str, guest_uid: str):
     log = logging.getLogger("matchmaking")
     
+    log.info(f"🔔 Notifying users of session found:")
+    log.info(f"   Session ID: {session_id}")
+    log.info(f"   Host UID: {host_uid}")
+    log.info(f"   Guest UID: {guest_uid}")
+    
     from services.sockets import user_sid_map, socket_manager
 
     if socket_manager is None:
+        log.warning("⚠ Socket manager is None, cannot send notifications")
         return
 
+    # Get both users' names
+    from sqlalchemy import text
+    from models.db import get_db
+    
+    db = next(get_db())
+    try:
+        host_name_row = db.execute(
+            text("SELECT first_name FROM users.users WHERE id = :id LIMIT 1"),
+            {"id": host_uid}
+        ).mappings().first()
+        
+        guest_name_row = db.execute(
+            text("SELECT first_name FROM users.users WHERE id = :id LIMIT 1"),
+            {"id": guest_uid}
+        ).mappings().first()
+        
+        host_first_name = host_name_row["first_name"] if host_name_row else None
+        guest_first_name = guest_name_row["first_name"] if guest_name_row else None
+        
+        log.info(f"   Host name: {host_first_name}")
+        log.info(f"   Guest name: {guest_first_name}")
+    finally:
+        db.close()
+
     notifications = [
-        (host_uid, guest_uid),
-        (guest_uid, host_uid)
+        (host_uid, guest_uid, guest_first_name, "host"),  # Tell host about guest
+        (guest_uid, host_uid, host_first_name, "guest"),   # Tell guest about host
     ]
     
-    for recipient_uid, partner_uid in notifications:
+    for recipient_uid, partner_uid, partner_first_name, role in notifications:
         try:
             recipient_uid_str = str(recipient_uid)
             partner_uid_str = str(partner_uid)
             recipient_sid = user_sid_map.get(recipient_uid_str)
 
             if not recipient_sid:
-                log.info(f"Recipient {recipient_uid_str} not connected, skipping socket notification.")
+                log.warning(f"⚠ Recipient {recipient_uid_str} ({role}) not connected, skipping socket notification.")
                 continue
+
+            payload = {
+                "role": role,
+                "session_id": str(session_id),
+                "partner_uid": partner_uid_str,
+                "partner_first_name": partner_first_name,
+                "message": "A match has been found!",
+            }
 
             await socket_manager.emit(
                 "session_found",
-                {
-                    "role": "host" if str(host_uid) == str(recipient_uid) else "guest",
-                    "session_id": str(session_id),
-                    "partner_uid": partner_uid_str,
-                    "message": "A match has been found!",
-                },
+                payload,
                 room=recipient_sid,
             )
-            log.info(f"Match notification sent to {recipient_uid_str} (partner: {partner_uid_str}) for session {session_id}.")
+            log.info(f"✅ Match notification sent to {recipient_uid_str} ({role}, SID={recipient_sid})")
+            log.info(f"   Partner: {partner_uid_str} (name: {partner_first_name})")
+            log.info(f"   Payload: {payload}")
 
         except Exception as e:
-            log.error(f"Failed to send WebSocket notification to {recipient_uid_str}: {e}")
+            log.error(f"❌ Failed to send WebSocket notification to {recipient_uid_str}: {e}")
 
 async def _match_user(uid: str, db: Session):
     log = logging.getLogger("matchmaking")
